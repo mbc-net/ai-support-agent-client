@@ -121,6 +121,9 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
+      - name: Update package.json version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
       - name: Determine release type
         id: release-type
         run: |
