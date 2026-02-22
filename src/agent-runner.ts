@@ -1,14 +1,13 @@
 import * as os from 'os'
 
-import { ApiClient } from './api-client'
 import { type AutoUpdaterHandle, startAutoUpdater } from './auto-updater'
 import { DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_POLL_INTERVAL, PROJECT_CODE_CLI_DIRECT, PROJECT_CODE_ENV_DEFAULT } from './constants'
-import { executeCommand } from './command-executor'
 import { getProjectList, loadConfig, saveConfig } from './config-manager'
 import { t } from './i18n'
 import { logger } from './logger'
+import { ProjectAgent } from './project-agent'
 import type { AutoUpdateConfig, ProjectRegistration, ReleaseChannel, SystemInfo } from './types'
-import { getErrorMessage, validateApiUrl } from './utils'
+import { validateApiUrl } from './utils'
 
 export interface RunnerOptions {
   token?: string
@@ -50,105 +49,12 @@ export function startProjectAgent(
     pollInterval: number
     heartbeatInterval: number
   },
-): { stop: () => void; client: ApiClient } {
-  const client = new ApiClient(project.apiUrl, project.token)
-  const prefix = `[${project.projectCode}]`
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
-  let pollTimer: ReturnType<typeof setInterval> | null = null
-  let processing = false
-
-  // 1. Register
-  const registerAndStart = async (): Promise<void> => {
-    try {
-      const result = await client.register({
-        agentId,
-        hostname: os.hostname(),
-        os: os.platform(),
-        arch: os.arch(),
-        ipAddress: getLocalIpAddress(),
-      })
-      logger.success(t('runner.registered', { prefix, agentId: result.agentId }))
-    } catch (error) {
-      logger.error(t('runner.registerFailed', { prefix, message: getErrorMessage(error) }))
-      return
-    }
-
-    // 2. Heartbeat loop
-    const sendHeartbeat = async (): Promise<void> => {
-      try {
-        await client.heartbeat(agentId, getSystemInfo())
-        logger.debug(`${prefix} Heartbeat sent`)
-      } catch (error) {
-        logger.warn(t('runner.heartbeatFailed', { prefix, message: getErrorMessage(error) }))
-      }
-    }
-
-    heartbeatTimer = setInterval(() => {
-      void sendHeartbeat()
-    }, options.heartbeatInterval)
-
-    void sendHeartbeat()
-
-    // 3. Command polling loop
-    const pollCommands = async (): Promise<void> => {
-      if (processing) return
-      processing = true
-
-      try {
-        const pending = await client.getPendingCommands()
-
-        for (const cmd of pending) {
-          logger.info(t('runner.commandReceived', { prefix, type: cmd.type, commandId: cmd.commandId }))
-
-          try {
-            const detail = await client.getCommand(cmd.commandId)
-            const result = await executeCommand(detail.type, detail.payload)
-            await client.submitResult(cmd.commandId, result)
-            logger.info(
-              t('runner.commandDone', {
-                prefix,
-                commandId: cmd.commandId,
-                result: result.success ? 'success' : 'failed',
-              }),
-            )
-          } catch (error) {
-            const message = getErrorMessage(error)
-            logger.error(
-              t('runner.commandError', { prefix, commandId: cmd.commandId, message }),
-            )
-
-            try {
-              await client.submitResult(cmd.commandId, {
-                success: false,
-                error: message,
-              })
-            } catch {
-              logger.error(t('runner.resultSendFailed', { prefix }))
-            }
-          }
-        }
-      } catch (error) {
-        logger.debug(`${prefix} Polling error: ${getErrorMessage(error)}`)
-      } finally {
-        processing = false
-      }
-    }
-
-    pollTimer = setInterval(() => {
-      void pollCommands()
-    }, options.pollInterval)
-  }
-
-  registerAndStart().catch((error) => {
-    logger.error(t('runner.unexpectedError', { message: getErrorMessage(error) }))
-  })
-
+): { stop: () => void; client: import('./api-client').ApiClient } {
+  const agent = new ProjectAgent(project, agentId, options)
+  agent.start()
   return {
-    stop: () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      if (pollTimer) clearInterval(pollTimer)
-    },
-    client,
+    stop: () => agent.stop(),
+    client: agent.getClient(),
   }
 }
 

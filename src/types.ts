@@ -120,3 +120,12 @@ export interface ProcessKillPayload {
   pid?: unknown
   signal?: unknown
 }
+
+// Discriminated union for type-safe command dispatch
+export type CommandDispatch =
+  | { type: 'execute_command'; payload: ShellCommandPayload }
+  | { type: 'file_read'; payload: FileReadPayload }
+  | { type: 'file_write'; payload: FileWritePayload }
+  | { type: 'file_list'; payload: FileListPayload }
+  | { type: 'process_list'; payload: Record<string, never> }
+  | { type: 'process_kill'; payload: ProcessKillPayload }
