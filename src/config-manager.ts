@@ -9,6 +9,9 @@ import { logger } from './logger'
 import type { AgentConfig, LegacyAgentConfig, ProjectRegistration } from './types'
 
 function getConfigDir(): string {
+  if (path.isAbsolute(CONFIG_DIR)) {
+    return CONFIG_DIR
+  }
   return path.join(os.homedir(), CONFIG_DIR)
 }
 
@@ -84,6 +87,8 @@ export function saveConfig(config: Partial<AgentConfig>): void {
     lastConnected: config.lastConnected ?? existing?.lastConnected,
     language: config.language ?? existing?.language,
     projects: config.projects ?? existing?.projects,
+    autoUpdate: config.autoUpdate ?? existing?.autoUpdate,
+    agentChatMode: config.agentChatMode ?? existing?.agentChatMode,
   }
 
   const configPath = getConfigPath()

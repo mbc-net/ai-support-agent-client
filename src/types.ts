@@ -26,6 +26,7 @@ export interface AgentConfig {
   language?: string
   projects?: ProjectRegistration[]
   autoUpdate?: AutoUpdateConfig
+  agentChatMode?: AgentChatMode
 }
 
 /**
@@ -44,6 +45,7 @@ export type AgentCommandType =
   | 'file_list'
   | 'process_list'
   | 'process_kill'
+  | 'chat'
 
 export type AgentCommandStatus =
   | 'PENDING'
@@ -76,12 +78,18 @@ export interface RegisterRequest {
   os: string
   arch: string
   ipAddress?: string
+  capabilities?: string[]
+  availableChatModes?: string[]
+  activeChatMode?: string
 }
+
+export type TransportMode = 'polling' | 'realtime'
 
 export interface RegisterResponse {
   agentId: string
   appsyncUrl: string
   appsyncApiKey: string
+  transportMode: TransportMode
 }
 
 export interface SystemInfo {
@@ -121,6 +129,55 @@ export interface ProcessKillPayload {
   signal?: unknown
 }
 
+export interface ChatPayload {
+  message?: unknown
+  conversationId?: unknown
+  projectCode?: unknown
+  history?: unknown
+}
+
+/**
+ * チャットモード（ルーティング先）
+ * - agent: 外部エージェント経由（デフォルト）
+ * - builtin: サーバー内蔵エージェント
+ */
+export type ChatMode = 'agent' | 'builtin'
+
+/**
+ * エージェントチャットモード（エージェント内部の実行方式）
+ * - claude_code: Claude Code CLI を使用
+ * - api: Anthropic API 直接呼び出し
+ */
+export type AgentChatMode = 'claude_code' | 'api'
+
+export interface AgentServerConfig {
+  agentEnabled: boolean
+  builtinAgentEnabled: boolean
+  builtinFallbackEnabled: boolean
+  externalAgentEnabled: boolean
+  chatMode: ChatMode
+  defaultAgentChatMode?: AgentChatMode
+  claudeCodeConfig?: {
+    model?: string
+    maxTokens?: number
+    systemPrompt?: string
+    allowedTools?: string[]
+  }
+}
+
+export type ChatChunkType =
+  | 'delta'
+  | 'tool_call'
+  | 'tool_result'
+  | 'done'
+  | 'error'
+
+export interface ChatChunk {
+  index: number
+  type: ChatChunkType
+  content: string
+}
+
 // Discriminated union for type-safe command dispatch
 export type CommandDispatch =
   | { type: 'execute_command'; payload: ShellCommandPayload }
@@ -129,3 +186,4 @@ export type CommandDispatch =
   | { type: 'file_list'; payload: FileListPayload }
   | { type: 'process_list'; payload: Record<string, never> }
   | { type: 'process_kill'; payload: ProcessKillPayload }
+  | { type: 'chat'; payload: ChatPayload }

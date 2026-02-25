@@ -6,7 +6,7 @@ import { getProjectList, loadConfig, saveConfig } from './config-manager'
 import { t } from './i18n'
 import { logger } from './logger'
 import { ProjectAgent } from './project-agent'
-import type { AutoUpdateConfig, ProjectRegistration, ReleaseChannel, SystemInfo } from './types'
+import type { AgentChatMode, AutoUpdateConfig, ProjectRegistration, ReleaseChannel, SystemInfo } from './types'
 import { validateApiUrl } from './utils'
 
 export interface RunnerOptions {
@@ -48,9 +48,10 @@ export function startProjectAgent(
   options: {
     pollInterval: number
     heartbeatInterval: number
+    agentChatMode?: AgentChatMode
   },
 ): { stop: () => void; client: import('./api-client').ApiClient } {
-  const agent = new ProjectAgent(project, agentId, options)
+  const agent = new ProjectAgent(project, agentId, options, undefined, options.agentChatMode)
   agent.start()
   return {
     stop: () => agent.stop(),
@@ -99,11 +100,12 @@ function runSingleProject(
   project: ProjectRegistration,
   agentId: string,
   options: RunnerOptions,
+  agentChatMode?: AgentChatMode,
 ): void {
   const { pollInterval, heartbeatInterval } = resolveIntervals(options)
 
   logger.info(t('runner.starting'))
-  const agent = startProjectAgent(project, agentId, { pollInterval, heartbeatInterval })
+  const agent = startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode })
 
   const autoUpdateConfig = resolveAutoUpdateConfig(options)
   let updater: AutoUpdaterHandle | undefined
@@ -149,7 +151,7 @@ export async function startAgent(options: RunnerOptions): Promise<void> {
       apiUrl: options.apiUrl,
     }
 
-    runSingleProject(project, agentId, options)
+    runSingleProject(project, agentId, options, config?.agentChatMode)
     saveConfig({ lastConnected: new Date().toISOString() })
     return
   }
@@ -190,7 +192,7 @@ export async function startAgent(options: RunnerOptions): Promise<void> {
   logger.info(t('runner.startingMulti', { count: projects.length }))
 
   const agents = projects.map((project) =>
-    startProjectAgent(project, agentId, { pollInterval, heartbeatInterval }),
+    startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode: config.agentChatMode }),
   )
 
   saveConfig({ lastConnected: new Date().toISOString() })
