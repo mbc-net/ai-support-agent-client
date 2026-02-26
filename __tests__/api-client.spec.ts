@@ -51,6 +51,45 @@ describe('ApiClient', () => {
         expect.objectContaining({ agentId: 'test-id', hostname: 'hostname' }),
       )
     })
+
+    it('should include ipAddress, availableChatModes, and activeChatMode when provided', async () => {
+      mockInstance.post.mockResolvedValue({
+        data: { agentId: 'test-id', appsyncUrl: '', appsyncApiKey: '' },
+      })
+
+      await client.register({
+        agentId: 'test-id',
+        hostname: 'hostname',
+        os: 'darwin',
+        arch: 'arm64',
+        ipAddress: '192.168.1.1',
+        availableChatModes: ['claude_code', 'api'],
+        activeChatMode: 'claude_code',
+      })
+
+      const callArgs = mockInstance.post.mock.calls[0][1]
+      expect(callArgs).toHaveProperty('ipAddress', '192.168.1.1')
+      expect(callArgs).toHaveProperty('availableChatModes', ['claude_code', 'api'])
+      expect(callArgs).toHaveProperty('activeChatMode', 'claude_code')
+    })
+
+    it('should not include ipAddress when not provided', async () => {
+      mockInstance.post.mockResolvedValue({
+        data: { agentId: 'test-id', appsyncUrl: '', appsyncApiKey: '' },
+      })
+
+      await client.register({
+        agentId: 'test-id',
+        hostname: 'hostname',
+        os: 'darwin',
+        arch: 'arm64',
+      })
+
+      const callArgs = mockInstance.post.mock.calls[0][1]
+      expect(callArgs).not.toHaveProperty('ipAddress')
+      expect(callArgs).not.toHaveProperty('availableChatModes')
+      expect(callArgs).not.toHaveProperty('activeChatMode')
+    })
   })
 
   describe('heartbeat', () => {
@@ -140,6 +179,38 @@ describe('ApiClient', () => {
       const callArgs = mockInstance.post.mock.calls[0][1]
       expect(callArgs).not.toHaveProperty('updateError')
     })
+
+    it('should include availableChatModes and activeChatMode when provided', async () => {
+      mockInstance.post.mockResolvedValue({ data: { success: true } })
+
+      await client.heartbeat('test-id', {
+        platform: 'darwin',
+        arch: 'arm64',
+        cpuUsage: 50,
+        memoryUsage: 60,
+        uptime: 1000,
+      }, undefined, ['claude_code', 'api'], 'claude_code')
+
+      const callArgs = mockInstance.post.mock.calls[0][1]
+      expect(callArgs).toHaveProperty('availableChatModes', ['claude_code', 'api'])
+      expect(callArgs).toHaveProperty('activeChatMode', 'claude_code')
+    })
+
+    it('should not include availableChatModes and activeChatMode when not provided', async () => {
+      mockInstance.post.mockResolvedValue({ data: { success: true } })
+
+      await client.heartbeat('test-id', {
+        platform: 'darwin',
+        arch: 'arm64',
+        cpuUsage: 50,
+        memoryUsage: 60,
+        uptime: 1000,
+      })
+
+      const callArgs = mockInstance.post.mock.calls[0][1]
+      expect(callArgs).not.toHaveProperty('availableChatModes')
+      expect(callArgs).not.toHaveProperty('activeChatMode')
+    })
   })
 
   describe('getPendingCommands', () => {
@@ -148,9 +219,13 @@ describe('ApiClient', () => {
         data: [{ commandId: 'cmd-1', type: 'execute_command', createdAt: 123 }],
       })
 
-      const result = await client.getPendingCommands()
+      const result = await client.getPendingCommands('agent-1')
       expect(result).toHaveLength(1)
       expect(result[0].commandId).toBe('cmd-1')
+      expect(mockInstance.get).toHaveBeenCalledWith(
+        '/api/agent/commands/pending',
+        { params: { agentId: 'agent-1' } },
+      )
     })
   })
 
@@ -158,10 +233,11 @@ describe('ApiClient', () => {
     it('should submit command result', async () => {
       mockInstance.post.mockResolvedValue({ data: { success: true } })
 
-      await client.submitResult('cmd-1', { success: true, data: 'output' })
+      await client.submitResult('cmd-1', { success: true, data: 'output' }, 'agent-1')
       expect(mockInstance.post).toHaveBeenCalledWith(
         '/api/agent/commands/cmd-1/result',
         { success: true, data: 'output' },
+        { params: { agentId: 'agent-1' } },
       )
     })
   })
@@ -178,24 +254,27 @@ describe('ApiClient', () => {
         },
       })
 
-      const result = await client.getCommand('cmd-1')
+      const result = await client.getCommand('cmd-1', 'agent-1')
       expect(result.commandId).toBe('cmd-1')
       expect(result.type).toBe('execute_command')
-      expect(mockInstance.get).toHaveBeenCalledWith('/api/agent/commands/cmd-1')
+      expect(mockInstance.get).toHaveBeenCalledWith(
+        '/api/agent/commands/cmd-1',
+        { params: { agentId: 'agent-1' } },
+      )
     })
   })
 
   describe('commandId validation', () => {
     it('should reject commandId with path traversal', async () => {
-      await expect(client.getCommand('../../admin')).rejects.toThrow('Invalid command ID format')
+      await expect(client.getCommand('../../admin', 'agent-1')).rejects.toThrow('Invalid command ID format')
     })
 
     it('should reject commandId with special characters', async () => {
-      await expect(client.submitResult('cmd;drop', { success: true, data: '' })).rejects.toThrow('Invalid command ID format')
+      await expect(client.submitResult('cmd;drop', { success: true, data: '' }, 'agent-1')).rejects.toThrow('Invalid command ID format')
     })
 
     it('should reject commandId with slashes', async () => {
-      await expect(client.getCommand('cmd/delete')).rejects.toThrow('Invalid command ID format')
+      await expect(client.getCommand('cmd/delete', 'agent-1')).rejects.toThrow('Invalid command ID format')
     })
 
     it('should accept valid commandId with alphanumeric, hyphens, and underscores', async () => {
@@ -203,7 +282,7 @@ describe('ApiClient', () => {
         data: { commandId: 'abc-123_DEF', type: 'execute_command', payload: {}, status: 'PENDING', createdAt: 0 },
       })
 
-      const result = await client.getCommand('abc-123_DEF')
+      const result = await client.getCommand('abc-123_DEF', 'agent-1')
       expect(result.commandId).toBe('abc-123_DEF')
     })
   })
@@ -239,6 +318,78 @@ describe('ApiClient', () => {
     })
   })
 
+  describe('reportConnectionStatus', () => {
+    it('should send connection status', async () => {
+      mockInstance.post.mockResolvedValue({ data: {} })
+
+      await client.reportConnectionStatus('agent-1', 'connected')
+
+      expect(mockInstance.post).toHaveBeenCalledWith(
+        '/api/agent/connection-status',
+        expect.objectContaining({
+          agentId: 'agent-1',
+          status: 'connected',
+          timestamp: expect.any(Number),
+        }),
+      )
+    })
+
+    it('should send disconnected status', async () => {
+      mockInstance.post.mockResolvedValue({ data: {} })
+
+      await client.reportConnectionStatus('agent-1', 'disconnected')
+
+      expect(mockInstance.post).toHaveBeenCalledWith(
+        '/api/agent/connection-status',
+        expect.objectContaining({
+          status: 'disconnected',
+        }),
+      )
+    })
+  })
+
+  describe('getConfig', () => {
+    it('should fetch agent config from server', async () => {
+      const config = {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: false,
+        externalAgentEnabled: true,
+        chatMode: 'agent',
+      }
+      mockInstance.get.mockResolvedValue({ data: config })
+
+      const result = await client.getConfig()
+
+      expect(result).toEqual(config)
+      expect(mockInstance.get).toHaveBeenCalledWith('/api/agent/config')
+    })
+  })
+
+  describe('submitChatChunk', () => {
+    it('should submit chat chunk with correct parameters', async () => {
+      mockInstance.post.mockResolvedValue({ data: {} })
+
+      await client.submitChatChunk('cmd-1', {
+        index: 0,
+        type: 'delta',
+        content: 'Hello',
+      }, 'agent-1')
+
+      expect(mockInstance.post).toHaveBeenCalledWith(
+        '/api/agent/commands/cmd-1/chunks',
+        { index: 0, type: 'delta', content: 'Hello' },
+        { params: { agentId: 'agent-1' } },
+      )
+    })
+
+    it('should validate commandId format', async () => {
+      await expect(
+        client.submitChatChunk('../evil', { index: 0, type: 'delta', content: '' }, 'agent-1'),
+      ).rejects.toThrow('Invalid command ID format')
+    })
+  })
+
   describe('retry logic', () => {
     beforeEach(() => {
       jest.useFakeTimers()
@@ -254,7 +405,7 @@ describe('ApiClient', () => {
           data: [{ commandId: 'cmd-1', type: 'execute_command', createdAt: 123 }],
         })
 
-      const promise = client.getPendingCommands()
+      const promise = client.getPendingCommands('agent-1')
       await jest.advanceTimersByTimeAsync(1000)
       const result = await promise
       expect(result).toHaveLength(1)
@@ -268,7 +419,7 @@ describe('ApiClient', () => {
         .mockRejectedValueOnce(new Error('Network Error'))
 
       const promise = client
-        .submitResult('cmd-1', { success: true, data: 'output' })
+        .submitResult('cmd-1', { success: true, data: 'output' }, 'agent-1')
         .catch((e: unknown) => e)
       await jest.advanceTimersByTimeAsync(1000)
       await jest.advanceTimersByTimeAsync(2000)
@@ -282,7 +433,7 @@ describe('ApiClient', () => {
       mockInstance.post.mockRejectedValueOnce(createAxiosError('Bad Request', 400))
 
       await expect(
-        client.submitResult('cmd-1', { success: true, data: 'output' }),
+        client.submitResult('cmd-1', { success: true, data: 'output' }, 'agent-1'),
       ).rejects.toThrow('Bad Request')
       expect(mockInstance.post).toHaveBeenCalledTimes(1)
     })
@@ -294,7 +445,7 @@ describe('ApiClient', () => {
           data: [{ commandId: 'cmd-1', type: 'execute_command', createdAt: 123 }],
         })
 
-      const promise = client.getPendingCommands()
+      const promise = client.getPendingCommands('agent-1')
       await jest.advanceTimersByTimeAsync(1000)
       const result = await promise
       expect(result).toHaveLength(1)
@@ -308,7 +459,7 @@ describe('ApiClient', () => {
           data: [{ commandId: 'cmd-1', type: 'execute_command', createdAt: 123 }],
         })
 
-      const promise = client.getPendingCommands()
+      const promise = client.getPendingCommands('agent-1')
       await jest.advanceTimersByTimeAsync(1000)
       const result = await promise
       expect(result).toHaveLength(1)
@@ -330,7 +481,7 @@ describe('ApiClient', () => {
             data: [{ commandId: 'cmd-1', type: 'execute_command', createdAt: 123 }],
           })
 
-        const promise = client.getPendingCommands()
+        const promise = client.getPendingCommands('agent-1')
         await jest.advanceTimersByTimeAsync(expectedDelays[i])
         await promise
 
@@ -351,7 +502,7 @@ describe('ApiClient', () => {
           data: [{ commandId: 'cmd-1', type: 'execute_command', createdAt: 123 }],
         })
 
-      const promise = client.getPendingCommands()
+      const promise = client.getPendingCommands('agent-1')
       await jest.advanceTimersByTimeAsync(1000)
       const result = await promise
       expect(result).toHaveLength(1)

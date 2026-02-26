@@ -1,14 +1,14 @@
 import * as os from 'os'
 
-import { ApiClient } from './api-client'
 import { type AutoUpdaterHandle, startAutoUpdater } from './auto-updater'
 import { DEFAULT_HEARTBEAT_INTERVAL, DEFAULT_POLL_INTERVAL, PROJECT_CODE_CLI_DIRECT, PROJECT_CODE_ENV_DEFAULT } from './constants'
-import { executeCommand } from './command-executor'
 import { getProjectList, loadConfig, saveConfig } from './config-manager'
 import { t } from './i18n'
 import { logger } from './logger'
-import type { AutoUpdateConfig, ProjectRegistration, ReleaseChannel, SystemInfo } from './types'
-import { getErrorMessage, validateApiUrl } from './utils'
+import { ProjectAgent } from './project-agent'
+import { getSystemInfo } from './system-info'
+import type { AgentChatMode, AutoUpdateConfig, ProjectRegistration, ReleaseChannel } from './types'
+import { validateApiUrl } from './utils'
 
 export interface RunnerOptions {
   token?: string
@@ -20,135 +20,20 @@ export interface RunnerOptions {
   updateChannel?: ReleaseChannel
 }
 
-export function getSystemInfo(): SystemInfo {
-  const cpus = os.cpus()
-  return {
-    platform: os.platform(),
-    arch: os.arch(),
-    cpuUsage: cpus.length > 0 ? (os.loadavg()[0] / cpus.length) * 100 : 0,
-    memoryUsage: (1 - os.freemem() / os.totalmem()) * 100,
-    uptime: os.uptime(),
-  }
-}
-
-export function getLocalIpAddress(): string | undefined {
-  const interfaces = os.networkInterfaces()
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name] ?? []) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address
-      }
-    }
-  }
-  return undefined
-}
-
 export function startProjectAgent(
   project: ProjectRegistration,
   agentId: string,
   options: {
     pollInterval: number
     heartbeatInterval: number
+    agentChatMode?: AgentChatMode
   },
-): { stop: () => void; client: ApiClient } {
-  const client = new ApiClient(project.apiUrl, project.token)
-  const prefix = `[${project.projectCode}]`
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null
-  let pollTimer: ReturnType<typeof setInterval> | null = null
-  let processing = false
-
-  // 1. Register
-  const registerAndStart = async (): Promise<void> => {
-    try {
-      const result = await client.register({
-        agentId,
-        hostname: os.hostname(),
-        os: os.platform(),
-        arch: os.arch(),
-        ipAddress: getLocalIpAddress(),
-      })
-      logger.success(t('runner.registered', { prefix, agentId: result.agentId }))
-    } catch (error) {
-      logger.error(t('runner.registerFailed', { prefix, message: getErrorMessage(error) }))
-      return
-    }
-
-    // 2. Heartbeat loop
-    const sendHeartbeat = async (): Promise<void> => {
-      try {
-        await client.heartbeat(agentId, getSystemInfo())
-        logger.debug(`${prefix} Heartbeat sent`)
-      } catch (error) {
-        logger.warn(t('runner.heartbeatFailed', { prefix, message: getErrorMessage(error) }))
-      }
-    }
-
-    heartbeatTimer = setInterval(() => {
-      void sendHeartbeat()
-    }, options.heartbeatInterval)
-
-    void sendHeartbeat()
-
-    // 3. Command polling loop
-    const pollCommands = async (): Promise<void> => {
-      if (processing) return
-      processing = true
-
-      try {
-        const pending = await client.getPendingCommands()
-
-        for (const cmd of pending) {
-          logger.info(t('runner.commandReceived', { prefix, type: cmd.type, commandId: cmd.commandId }))
-
-          try {
-            const detail = await client.getCommand(cmd.commandId)
-            const result = await executeCommand(detail.type, detail.payload)
-            await client.submitResult(cmd.commandId, result)
-            logger.info(
-              t('runner.commandDone', {
-                prefix,
-                commandId: cmd.commandId,
-                result: result.success ? 'success' : 'failed',
-              }),
-            )
-          } catch (error) {
-            const message = getErrorMessage(error)
-            logger.error(
-              t('runner.commandError', { prefix, commandId: cmd.commandId, message }),
-            )
-
-            try {
-              await client.submitResult(cmd.commandId, {
-                success: false,
-                error: message,
-              })
-            } catch {
-              logger.error(t('runner.resultSendFailed', { prefix }))
-            }
-          }
-        }
-      } catch (error) {
-        logger.debug(`${prefix} Polling error: ${getErrorMessage(error)}`)
-      } finally {
-        processing = false
-      }
-    }
-
-    pollTimer = setInterval(() => {
-      void pollCommands()
-    }, options.pollInterval)
-  }
-
-  registerAndStart().catch((error) => {
-    logger.error(t('runner.unexpectedError', { message: getErrorMessage(error) }))
-  })
-
+): { stop: () => void; client: import('./api-client').ApiClient } {
+  const agent = new ProjectAgent(project, agentId, options, undefined, options.agentChatMode)
+  agent.start()
   return {
-    stop: () => {
-      if (heartbeatTimer) clearInterval(heartbeatTimer)
-      if (pollTimer) clearInterval(pollTimer)
-    },
-    client,
+    stop: () => agent.stop(),
+    client: agent.getClient(),
   }
 }
 
@@ -193,11 +78,12 @@ function runSingleProject(
   project: ProjectRegistration,
   agentId: string,
   options: RunnerOptions,
+  agentChatMode?: AgentChatMode,
 ): void {
   const { pollInterval, heartbeatInterval } = resolveIntervals(options)
 
   logger.info(t('runner.starting'))
-  const agent = startProjectAgent(project, agentId, { pollInterval, heartbeatInterval })
+  const agent = startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode })
 
   const autoUpdateConfig = resolveAutoUpdateConfig(options)
   let updater: AutoUpdaterHandle | undefined
@@ -218,6 +104,15 @@ function runSingleProject(
 }
 
 export async function startAgent(options: RunnerOptions): Promise<void> {
+  // グローバルエラーハンドラ（非同期エラーでの静かなクラッシュを防止）
+  process.on('uncaughtException', (error) => {
+    logger.error(`Uncaught exception: ${error.message}${error.stack ? `\n${error.stack}` : ''}`)
+    process.exit(1)
+  })
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`Unhandled rejection: ${reason}`)
+  })
+
   if (options.verbose) {
     logger.setVerbose(true)
   }
@@ -243,7 +138,7 @@ export async function startAgent(options: RunnerOptions): Promise<void> {
       apiUrl: options.apiUrl,
     }
 
-    runSingleProject(project, agentId, options)
+    runSingleProject(project, agentId, options, config?.agentChatMode)
     saveConfig({ lastConnected: new Date().toISOString() })
     return
   }
@@ -284,7 +179,7 @@ export async function startAgent(options: RunnerOptions): Promise<void> {
   logger.info(t('runner.startingMulti', { count: projects.length }))
 
   const agents = projects.map((project) =>
-    startProjectAgent(project, agentId, { pollInterval, heartbeatInterval }),
+    startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode: config.agentChatMode }),
   )
 
   saveConfig({ lastConnected: new Date().toISOString() })

@@ -2,11 +2,10 @@ import * as os from 'os'
 
 import {
   startAgent,
-  getSystemInfo,
-  getLocalIpAddress,
   startProjectAgent,
   setupShutdownHandlers,
 } from '../src/agent-runner'
+import { getSystemInfo, getLocalIpAddress } from '../src/system-info'
 import { ApiClient } from '../src/api-client'
 import { executeCommand } from '../src/command-executor'
 import { loadConfig, getProjectList, saveConfig } from '../src/config-manager'
@@ -18,6 +17,13 @@ jest.mock('../src/config-manager')
 jest.mock('../src/logger')
 jest.mock('../src/auto-updater', () => ({
   startAutoUpdater: jest.fn().mockReturnValue({ stop: jest.fn() }),
+}))
+jest.mock('../src/chat-mode-detector', () => ({
+  detectAvailableChatModes: jest.fn().mockResolvedValue([]),
+  resolveActiveChatMode: jest.fn().mockReturnValue(undefined),
+}))
+jest.mock('../src/appsync-subscriber', () => ({
+  AppSyncSubscriber: jest.fn(),
 }))
 jest.mock('os', () => {
   const actual = jest.requireActual<typeof os>('os')
@@ -84,6 +90,7 @@ describe('agent-runner', () => {
       getCommand: jest.fn(),
       submitResult: jest.fn(),
       getVersionInfo: jest.fn().mockResolvedValue({ latestVersion: '0.0.1', minimumVersion: '0.0.0', channel: 'latest', channels: {} }),
+      getConfig: jest.fn().mockResolvedValue({ chatMode: 'agent', defaultAgentChatMode: 'claude_code' }),
     }
     MockApiClient.mockImplementation(() => mockInstance as unknown as ApiClient)
 
@@ -372,6 +379,7 @@ describe('startProjectAgent', () => {
     getCommand: jest.Mock
     submitResult: jest.Mock
     getVersionInfo: jest.Mock
+    getConfig: jest.Mock
   }
 
   beforeEach(() => {
@@ -383,6 +391,7 @@ describe('startProjectAgent', () => {
       getCommand: jest.fn(),
       submitResult: jest.fn().mockResolvedValue(undefined),
       getVersionInfo: jest.fn().mockResolvedValue({ latestVersion: '0.0.1', minimumVersion: '0.0.0', channel: 'latest', channels: {} }),
+      getConfig: jest.fn().mockResolvedValue({ chatMode: 'agent', defaultAgentChatMode: 'claude_code' }),
     }
     ;(ApiClient as jest.MockedClass<typeof ApiClient>).mockImplementation(
       () => mockClient as unknown as ApiClient,
@@ -452,10 +461,10 @@ describe('startProjectAgent', () => {
     // Trigger poll interval
     await jest.advanceTimersByTimeAsync(intervals.pollInterval)
 
-    expect(mockClient.getPendingCommands).toHaveBeenCalled()
-    expect(mockClient.getCommand).toHaveBeenCalledWith('cmd-1')
-    expect(mockedExecuteCommand).toHaveBeenCalledWith('execute_command', { command: 'echo hi' })
-    expect(mockClient.submitResult).toHaveBeenCalledWith('cmd-1', { success: true, data: 'hi' })
+    expect(mockClient.getPendingCommands).toHaveBeenCalledWith('agent-1')
+    expect(mockClient.getCommand).toHaveBeenCalledWith('cmd-1', 'agent-1')
+    expect(mockedExecuteCommand).toHaveBeenCalledWith('execute_command', { command: 'echo hi' }, { commandId: 'cmd-1', client: mockClient, serverConfig: expect.any(Object), activeChatMode: undefined, agentId: 'agent-1' })
+    expect(mockClient.submitResult).toHaveBeenCalledWith('cmd-1', { success: true, data: 'hi' }, 'agent-1')
 
     agent.stop()
   })

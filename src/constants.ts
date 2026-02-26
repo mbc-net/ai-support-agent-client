@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs'
+import * as os from 'os'
 import { join } from 'path'
 
 function getPackageVersion(): string {
@@ -10,10 +11,14 @@ function getPackageVersion(): string {
   }
 }
 
-export const CONFIG_DIR = '.ai-support-agent'
+export const CONFIG_DIR = (() => {
+  const envDir = process.env.AI_SUPPORT_AGENT_CONFIG_DIR
+  if (!envDir) return '.ai-support-agent'
+  return envDir.replace(/^~(?=$|\/)/, os.homedir())
+})()
 export const CONFIG_FILE = 'config.json'
 export const DEFAULT_POLL_INTERVAL = 3000
-export const DEFAULT_HEARTBEAT_INTERVAL = 30000
+export const DEFAULT_HEARTBEAT_INTERVAL = 60000
 export const AUTH_TIMEOUT = 5 * 60 * 1000 // 5 minutes
 export const AGENT_VERSION = getPackageVersion()
 export const MAX_OUTPUT_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -55,5 +60,8 @@ export const API_ENDPOINTS = {
   COMMANDS_PENDING: '/api/agent/commands/pending',
   COMMAND: (commandId: string) => `/api/agent/commands/${commandId}`,
   COMMAND_RESULT: (commandId: string) => `/api/agent/commands/${commandId}/result`,
+  COMMAND_CHUNKS: (commandId: string) => `/api/agent/commands/${commandId}/chunks`,
   VERSION: '/api/agent/version',
+  CONNECTION_STATUS: '/api/agent/connection-status',
+  CONFIG: '/api/agent/config',
 } as const
