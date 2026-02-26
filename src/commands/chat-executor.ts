@@ -6,6 +6,7 @@ import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, Comm
 import { getErrorMessage, parseString } from '../utils'
 
 import { executeApiChatCommand } from './api-chat-executor'
+import { createChunkSender } from './shared-chat-utils'
 
 /**
  * エージェントチャットモードに応じてチャットメッセージを処理する
@@ -55,28 +56,12 @@ async function executeClaudeCodeChat(
 
   logger.info(`[chat] Starting chat command [${commandId}]: message="${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`)
 
-  let chunkIndex = 0
-
-  const sendChunk = async (
-    type: ChatChunkType,
-    content: string,
-  ): Promise<void> => {
-    try {
-      logger.debug(`[chat] Sending chunk #${chunkIndex} (${type}) [${commandId}]: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`)
-      await client.submitChatChunk(commandId, {
-        index: chunkIndex++,
-        type,
-        content,
-      }, agentId)
-    } catch (error) {
-      logger.warn(`[chat] Failed to send chunk #${chunkIndex - 1}: ${getErrorMessage(error)}`)
-    }
-  }
+  const { sendChunk, getChunkIndex } = createChunkSender(commandId, client, agentId, 'chat', { debugLog: true })
 
   try {
     logger.debug(`[chat] Spawning claude CLI for command [${commandId}]`)
     const result = await runClaudeCode(message, sendChunk)
-    logger.info(`[chat] Chat command completed [${commandId}]: output=${result.length} chars, ${chunkIndex} chunks sent`)
+    logger.info(`[chat] Chat command completed [${commandId}]: output=${result.length} chars, ${getChunkIndex()} chunks sent`)
     // 完了チャンクを送信
     await sendChunk('done', result)
     return { success: true, data: result }

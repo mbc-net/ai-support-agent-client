@@ -5,6 +5,8 @@ import { logger } from '../logger'
 import type { AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
 import { getErrorMessage, parseString } from '../utils'
 
+import { createChunkSender } from './shared-chat-utils'
+
 const DEFAULT_MODEL = 'claude-sonnet-4-6-20250514'
 
 /**
@@ -39,24 +41,7 @@ export async function executeApiChatCommand(
     `[api-chat] Starting API chat command [${commandId}]: message="${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`,
   )
 
-  let chunkIndex = 0
-
-  const sendChunk = async (
-    type: ChatChunkType,
-    content: string,
-  ): Promise<void> => {
-    try {
-      await client.submitChatChunk(commandId, {
-        index: chunkIndex++,
-        type,
-        content,
-      }, agentId)
-    } catch (error) {
-      logger.warn(
-        `[api-chat] Failed to send chunk #${chunkIndex - 1}: ${getErrorMessage(error)}`,
-      )
-    }
-  }
+  const { sendChunk, getChunkIndex } = createChunkSender(commandId, client, agentId, 'api-chat')
 
   try {
     const model = config?.claudeCodeConfig?.model ?? DEFAULT_MODEL
@@ -73,7 +58,7 @@ export async function executeApiChatCommand(
     )
 
     logger.info(
-      `[api-chat] API chat command completed [${commandId}]: output=${result.length} chars, ${chunkIndex} chunks sent`,
+      `[api-chat] API chat command completed [${commandId}]: output=${result.length} chars, ${getChunkIndex()} chunks sent`,
     )
     await sendChunk('done', result)
     return { success: true, data: result }
