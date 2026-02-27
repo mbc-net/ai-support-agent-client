@@ -1,7 +1,9 @@
 import { ApiClient } from '../src/api-client'
 import { AppSyncSubscriber } from '../src/appsync-subscriber'
+import { writeAwsConfig } from '../src/aws-profile'
 import { executeCommand } from '../src/commands'
 import { logger } from '../src/logger'
+import { syncProjectConfig } from '../src/project-config-sync'
 import { ProjectAgent } from '../src/project-agent'
 
 jest.mock('../src/api-client')
@@ -12,10 +14,21 @@ jest.mock('../src/chat-mode-detector', () => ({
   detectAvailableChatModes: jest.fn().mockResolvedValue([]),
   resolveActiveChatMode: jest.fn().mockReturnValue(undefined),
 }))
+jest.mock('../src/project-config-sync', () => ({
+  syncProjectConfig: jest.fn().mockResolvedValue(null),
+}))
+jest.mock('../src/project-dir', () => ({
+  initProjectDir: jest.fn().mockReturnValue('/tmp/test-project'),
+}))
+jest.mock('../src/aws-profile', () => ({
+  writeAwsConfig: jest.fn(),
+}))
 
 const MockApiClient = ApiClient as jest.MockedClass<typeof ApiClient>
 const MockAppSyncSubscriber = AppSyncSubscriber as jest.MockedClass<typeof AppSyncSubscriber>
 const mockedExecuteCommand = executeCommand as jest.MockedFunction<typeof executeCommand>
+const mockedSyncProjectConfig = syncProjectConfig as jest.MockedFunction<typeof syncProjectConfig>
+const mockedWriteAwsConfig = writeAwsConfig as jest.MockedFunction<typeof writeAwsConfig>
 
 describe('ProjectAgent', () => {
   let mockClient: {
@@ -27,6 +40,7 @@ describe('ProjectAgent', () => {
     getVersionInfo: jest.Mock
     reportConnectionStatus: jest.Mock
     getConfig: jest.Mock
+    getProjectConfig: jest.Mock
   }
 
   let mockSubscriber: {
@@ -50,6 +64,7 @@ describe('ProjectAgent', () => {
       getVersionInfo: jest.fn().mockResolvedValue({ latestVersion: '0.0.1', minimumVersion: '0.0.0', channel: 'latest', channels: {} }),
       reportConnectionStatus: jest.fn().mockResolvedValue(undefined),
       getConfig: jest.fn().mockResolvedValue({ chatMode: 'agent', defaultAgentChatMode: 'claude_code' }),
+      getProjectConfig: jest.fn().mockResolvedValue({ configHash: 'abc123', project: { projectCode: 'test-proj' }, agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] } }),
     }
     MockApiClient.mockImplementation(() => mockClient as unknown as ApiClient)
 
@@ -140,7 +155,7 @@ describe('ProjectAgent', () => {
 
       expect(mockClient.getPendingCommands).toHaveBeenCalledWith('agent-1')
       expect(mockClient.getCommand).toHaveBeenCalledWith('cmd-1', 'agent-1')
-      expect(mockedExecuteCommand).toHaveBeenCalledWith('execute_command', { command: 'echo hi' }, { commandId: 'cmd-1', client: mockClient, serverConfig: expect.any(Object), activeChatMode: undefined, agentId: 'agent-1' })
+      expect(mockedExecuteCommand).toHaveBeenCalledWith('execute_command', { command: 'echo hi' }, expect.objectContaining({ commandId: 'cmd-1', client: mockClient, agentId: 'agent-1' }))
       expect(mockClient.submitResult).toHaveBeenCalledWith('cmd-1', { success: true, data: 'hi' }, 'agent-1')
 
       agent.stop()
@@ -502,6 +517,260 @@ describe('ProjectAgent', () => {
       expect(mockClient.register).toHaveBeenCalled()
 
       agent.stop()
+    })
+  })
+
+  describe('project config sync', () => {
+    it('should perform initial config sync after registration', async () => {
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(mockedSyncProjectConfig).toHaveBeenCalled()
+
+      agent.stop()
+    })
+
+    it('should apply project config when sync returns config', async () => {
+      const mockConfig = {
+        configHash: 'new-hash',
+        project: { projectCode: 'test-proj', projectName: 'Test' },
+        agent: {
+          agentEnabled: true,
+          builtinAgentEnabled: false,
+          builtinFallbackEnabled: false,
+          externalAgentEnabled: true,
+          allowedTools: ['WebFetch'],
+          claudeCodeConfig: { additionalDirs: ['/extra'], appendSystemPrompt: 'Be helpful' },
+        },
+      }
+      mockedSyncProjectConfig.mockResolvedValueOnce(mockConfig)
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Config applied'))
+
+      agent.stop()
+    })
+
+    it('should write AWS config when project config has AWS accounts and projectDir', async () => {
+      const projectWithDir = { projectCode: 'test-proj', token: 'tok', apiUrl: 'http://api', projectDir: '/tmp/proj' }
+      const mockConfig = {
+        configHash: 'aws-hash',
+        project: { projectCode: 'test-proj', projectName: 'Test' },
+        agent: {
+          agentEnabled: true,
+          builtinAgentEnabled: true,
+          builtinFallbackEnabled: true,
+          externalAgentEnabled: true,
+          allowedTools: [],
+        },
+        aws: {
+          accounts: [
+            { id: '1', name: 'dev', region: 'ap-northeast-1', accountId: '123456', auth: { method: 'access_key' as const }, isDefault: true },
+          ],
+        },
+      }
+      mockedSyncProjectConfig.mockResolvedValueOnce(mockConfig)
+
+      const agent = new ProjectAgent(projectWithDir, 'agent-1', options, undefined, undefined, undefined)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(mockedWriteAwsConfig).toHaveBeenCalledWith(
+        '/tmp/test-project', // resolved by mocked initProjectDir
+        'test-proj',
+        mockConfig.aws.accounts,
+      )
+
+      agent.stop()
+    })
+
+    it('should schedule config sync when heartbeat response has different configHash', async () => {
+      mockClient.heartbeat.mockResolvedValue({ success: true, configHash: 'changed-hash' })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Config hash changed'))
+
+      // Wait for debounce timer
+      await jest.advanceTimersByTimeAsync(3000)
+
+      // syncProjectConfig should be called again (initial + debounced)
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(2)
+
+      agent.stop()
+    })
+
+    it('should handle config-update notification', async () => {
+      mockClient.register.mockResolvedValue({
+        agentId: 'test-id',
+        appsyncUrl: 'https://example.appsync-api.ap-northeast-1.amazonaws.com/graphql',
+        appsyncApiKey: 'da2-testkey123',
+        transportMode: 'realtime',
+      })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      const onMessage = mockSubscriber.subscribe.mock.calls[0][1] as (notification: Record<string, unknown>) => void
+
+      onMessage({
+        id: 'config-1',
+        table: 'support-agent',
+        pk: 'AGENT#test-proj',
+        sk: 'CONFIG#test-proj',
+        tenantCode: 'test-proj',
+        action: 'config-update',
+        content: { configHash: 'new-hash-123', projectCode: 'test-proj' },
+      })
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Config update detected'))
+
+      // Wait for debounce
+      await jest.advanceTimersByTimeAsync(3000)
+
+      // syncProjectConfig: 1 initial + 1 debounced
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(2)
+
+      agent.stop()
+    })
+
+    it('should debounce multiple config-update notifications', async () => {
+      mockClient.register.mockResolvedValue({
+        agentId: 'test-id',
+        appsyncUrl: 'https://example.appsync-api.ap-northeast-1.amazonaws.com/graphql',
+        appsyncApiKey: 'da2-testkey123',
+        transportMode: 'realtime',
+      })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      const onMessage = mockSubscriber.subscribe.mock.calls[0][1] as (notification: Record<string, unknown>) => void
+
+      // Send multiple config-update notifications rapidly
+      onMessage({ id: '1', table: '', pk: '', sk: '', tenantCode: '', action: 'config-update', content: { configHash: 'hash-1' } })
+      onMessage({ id: '2', table: '', pk: '', sk: '', tenantCode: '', action: 'config-update', content: { configHash: 'hash-2' } })
+      onMessage({ id: '3', table: '', pk: '', sk: '', tenantCode: '', action: 'config-update', content: { configHash: 'hash-3' } })
+
+      // Wait for debounce (only last should trigger)
+      await jest.advanceTimersByTimeAsync(3000)
+
+      // syncProjectConfig: 1 initial + 1 debounced (not 3)
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(2)
+
+      agent.stop()
+    })
+
+    it('should not schedule config sync when configHash is same in heartbeat', async () => {
+      // First sync returns a config with hash
+      mockedSyncProjectConfig.mockResolvedValueOnce({
+        configHash: 'same-hash',
+        project: { projectCode: 'test-proj', projectName: 'Test' },
+        agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+      })
+      // Heartbeat returns same hash
+      mockClient.heartbeat.mockResolvedValue({ success: true, configHash: 'same-hash' })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      // Should NOT log "Config hash changed"
+      const hashChangedCalls = (logger.info as jest.Mock).mock.calls.filter(
+        (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('Config hash changed'),
+      )
+      expect(hashChangedCalls).toHaveLength(0)
+
+      agent.stop()
+    })
+
+    it('should pass projectConfig to executeCommand options', async () => {
+      const mockConfig = {
+        configHash: 'cfg-hash',
+        project: { projectCode: 'test-proj', projectName: 'Test' },
+        agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+      }
+      mockedSyncProjectConfig.mockResolvedValueOnce(mockConfig)
+
+      mockClient.getPendingCommands.mockResolvedValue([
+        { commandId: 'cmd-cfg', type: 'chat' },
+      ])
+      mockClient.getCommand.mockResolvedValue({
+        commandId: 'cmd-cfg',
+        type: 'chat',
+        payload: { message: 'hello' },
+      })
+      mockedExecuteCommand.mockResolvedValue({ success: true, data: 'ok' })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+      await jest.advanceTimersByTimeAsync(options.pollInterval)
+
+      expect(mockedExecuteCommand).toHaveBeenCalledWith(
+        'chat',
+        { message: 'hello' },
+        expect.objectContaining({ projectConfig: mockConfig }),
+      )
+
+      agent.stop()
+    })
+
+    it('should clear configSyncDebounceTimer on stop()', async () => {
+      mockClient.register.mockResolvedValue({
+        agentId: 'test-id',
+        appsyncUrl: 'https://example.appsync-api.ap-northeast-1.amazonaws.com/graphql',
+        appsyncApiKey: 'da2-testkey123',
+        transportMode: 'realtime',
+      })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      const onMessage = mockSubscriber.subscribe.mock.calls[0][1] as (notification: Record<string, unknown>) => void
+      onMessage({ id: '1', table: '', pk: '', sk: '', tenantCode: '', action: 'config-update', content: { configHash: 'pending-hash' } })
+
+      // Stop before debounce fires
+      agent.stop()
+
+      mockedSyncProjectConfig.mockClear()
+      await jest.advanceTimersByTimeAsync(5000)
+
+      // Debounced sync should NOT have fired
+      expect(mockedSyncProjectConfig).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('project directory', () => {
+    it('should initialize project directory when projectDir is set', () => {
+      const projectWithDir = { projectCode: 'test-proj', token: 'tok', apiUrl: 'http://api', projectDir: '/tmp/proj' }
+      const agent = new ProjectAgent(projectWithDir, 'agent-1', options)
+      expect(agent).toBeDefined()
+    })
+
+    it('should initialize project directory when defaultProjectDir is set', () => {
+      const agent = new ProjectAgent(project, 'agent-1', options, undefined, undefined, '~/projects/{projectCode}')
+      expect(agent).toBeDefined()
     })
   })
 })

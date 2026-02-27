@@ -9,7 +9,9 @@ import type {
   AwsCredentials,
   ChatChunk,
   CommandResult,
+  HeartbeatResponse,
   PendingCommand,
+  ProjectConfigResponse,
   ReleaseChannel,
   RegisterRequest,
   RegisterResponse,
@@ -67,10 +69,10 @@ export class ApiClient {
     availableChatModes?: string[],
     activeChatMode?: string,
     ipAddress?: string,
-  ): Promise<void> {
+  ): Promise<HeartbeatResponse | void> {
     logger.debug('Sending heartbeat')
-    await this.retry.withRetry(async () => {
-      await this.client.post(API_ENDPOINTS.HEARTBEAT, {
+    return this.retry.withRetry(async () => {
+      const { data } = await this.client.post<HeartbeatResponse>(API_ENDPOINTS.HEARTBEAT, {
         agentId,
         timestamp: Date.now(),
         version: AGENT_VERSION,
@@ -80,6 +82,7 @@ export class ApiClient {
         ...(activeChatMode !== undefined && { activeChatMode }),
         ...(ipAddress && { ipAddress }),
       })
+      return data
     })
   }
 
@@ -153,6 +156,16 @@ export class ApiClient {
     return this.retry.withRetry(async () => {
       const { data } = await this.client.get<AgentServerConfig>(
         API_ENDPOINTS.CONFIG,
+      )
+      return data
+    })
+  }
+
+  async getProjectConfig(): Promise<ProjectConfigResponse> {
+    logger.debug('Fetching project config from server')
+    return this.retry.withRetry(async () => {
+      const { data } = await this.client.get<ProjectConfigResponse>(
+        API_ENDPOINTS.PROJECT_CONFIG,
       )
       return data
     })

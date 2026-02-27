@@ -88,4 +88,7 @@ export const API_ENDPOINTS = {
   CONNECTION_STATUS: '/api/agent/connection-status',
   CONFIG: '/api/agent/config',
   AWS_CREDENTIALS: '/api/agent/aws-credentials',
+  PROJECT_CONFIG: '/api/agent/project-config',
 } as const
+
+export const CONFIG_SYNC_DEBOUNCE_MS = 2000

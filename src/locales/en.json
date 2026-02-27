@@ -92,5 +92,17 @@
   "update.forced": "Forced update required: current version is below minimum ({{minimumVersion}}). Updating to {{version}}...",
   "update.disabled": "disabled",
   "update.enabled": "enabled (auto-restart: {{autoRestart}})",
-  "update.checkFailed": "Version check failed: {{message}}"
+  "update.checkFailed": "Version check failed: {{message}}",
+
+  "cmd.setProjectDir": "Set project directory",
+  "cmd.setProjectDir.project": "Project code",
+  "cmd.setProjectDir.path": "Directory path",
+  "cmd.setProjectDir.default": "Default directory template (use {projectCode} placeholder)",
+  "projectDir.created": "Created project directory: {{projectDir}}",
+  "projectDir.set": "Project \"{{projectCode}}\" directory set to {{projectDir}}",
+  "projectDir.defaultSet": "Default project directory template set to \"{{template}}\"",
+  "projectDir.noProject": "Project \"{{projectCode}}\" is not registered.",
+  "projectDir.initialized": "Project directory initialized: {{projectDir}} ({{projectCode}})",
+  "projectDir.usageHint": "Usage: set-project-dir --project <code> --path <path> OR --default <template>",
+  "projectDir.cleaned": "Cleaned up metadata directory: {{metadataDir}}"
 }
