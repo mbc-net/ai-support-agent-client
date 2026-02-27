@@ -1,5 +1,7 @@
+import os from 'os'
+
 import type { ApiClient } from '../../src/api-client'
-import { executeChatCommand } from '../../src/commands/chat-executor'
+import { buildClaudeArgs, buildCleanEnv, executeChatCommand } from '../../src/commands/chat-executor'
 import type { AgentServerConfig, ChatPayload } from '../../src/types'
 
 jest.mock('../../src/logger')
@@ -550,6 +552,119 @@ describe('chat-executor', () => {
       expect(env).toHaveProperty('PATH')
 
       process.env = originalEnv
+    })
+  })
+
+  describe('buildCleanEnv', () => {
+    let originalEnv: NodeJS.ProcessEnv
+
+    beforeEach(() => {
+      originalEnv = process.env
+    })
+
+    afterEach(() => {
+      process.env = originalEnv
+    })
+
+    it('should exclude CLAUDECODE', () => {
+      process.env = { CLAUDECODE: '1', HOME: '/home/user' }
+      const result = buildCleanEnv()
+      expect(result).not.toHaveProperty('CLAUDECODE')
+      expect(result).toHaveProperty('HOME', '/home/user')
+    })
+
+    it('should exclude CLAUDE_CODE_* variables', () => {
+      process.env = { CLAUDE_CODE_SSE_PORT: '1234', CLAUDE_CODE_FOO: 'bar', PATH: '/usr/bin' }
+      const result = buildCleanEnv()
+      expect(result).not.toHaveProperty('CLAUDE_CODE_SSE_PORT')
+      expect(result).not.toHaveProperty('CLAUDE_CODE_FOO')
+      expect(result).toHaveProperty('PATH', '/usr/bin')
+    })
+
+    it('should keep other environment variables', () => {
+      process.env = { NODE_ENV: 'test', HOME: '/home/user', LANG: 'en_US.UTF-8' }
+      const result = buildCleanEnv()
+      expect(result).toEqual({ NODE_ENV: 'test', HOME: '/home/user', LANG: 'en_US.UTF-8' })
+    })
+
+    it('should exclude undefined values', () => {
+      // process.env can have undefined values when explicitly set
+      process.env = { DEFINED: 'yes' }
+      // Object.entries filters undefined naturally, but we test the contract
+      const result = buildCleanEnv()
+      expect(result).toHaveProperty('DEFINED', 'yes')
+      // Verify no undefined values exist
+      for (const value of Object.values(result)) {
+        expect(value).toBeDefined()
+      }
+    })
+  })
+
+  describe('buildClaudeArgs', () => {
+    it('should return ["-p", message] for basic message', () => {
+      const result = buildClaudeArgs('hello')
+      expect(result).toEqual(['-p', 'hello'])
+    })
+
+    it('should add --allowedTools for each tool', () => {
+      const result = buildClaudeArgs('hello', { allowedTools: ['WebFetch', 'WebSearch'] })
+      expect(result).toEqual(['-p', '--allowedTools', 'WebFetch', '--allowedTools', 'WebSearch', 'hello'])
+    })
+
+    it('should add --add-dir for each directory', () => {
+      const result = buildClaudeArgs('hello', { addDirs: ['/tmp/project'] })
+      expect(result).toEqual(['-p', '--add-dir', '/tmp/project', 'hello'])
+    })
+
+    it('should resolve ~ to homedir in addDirs', () => {
+      const result = buildClaudeArgs('hello', { addDirs: ['~/projects/MBC_01'] })
+      expect(result).toContain('--add-dir')
+      const addDirIdx = result.indexOf('--add-dir')
+      expect(result[addDirIdx + 1]).toBe(`${os.homedir()}/projects/MBC_01`)
+      expect(result[addDirIdx + 1]).not.toContain('~')
+    })
+
+    it('should add --append-system-prompt with Japanese prompt for locale "ja"', () => {
+      const result = buildClaudeArgs('hello', { locale: 'ja' })
+      expect(result).toContain('--append-system-prompt')
+      const promptIdx = result.indexOf('--append-system-prompt')
+      expect(result[promptIdx + 1]).toContain('Japanese')
+    })
+
+    it('should add --append-system-prompt with English prompt for locale "en"', () => {
+      const result = buildClaudeArgs('hello', { locale: 'en' })
+      expect(result).toContain('--append-system-prompt')
+      const promptIdx = result.indexOf('--append-system-prompt')
+      expect(result[promptIdx + 1]).toContain('English')
+    })
+
+    it('should not add --append-system-prompt when locale is not provided', () => {
+      const result = buildClaudeArgs('hello')
+      expect(result).not.toContain('--append-system-prompt')
+    })
+
+    it('should not add --allowedTools when array is empty', () => {
+      const result = buildClaudeArgs('hello', { allowedTools: [] })
+      expect(result).toEqual(['-p', 'hello'])
+    })
+
+    it('should not add --add-dir when array is empty', () => {
+      const result = buildClaudeArgs('hello', { addDirs: [] })
+      expect(result).toEqual(['-p', 'hello'])
+    })
+
+    it('should handle all options combined', () => {
+      const result = buildClaudeArgs('hello', {
+        allowedTools: ['WebFetch'],
+        addDirs: ['/tmp/dir'],
+        locale: 'ja',
+      })
+      expect(result).toContain('--allowedTools')
+      expect(result).toContain('WebFetch')
+      expect(result).toContain('--add-dir')
+      expect(result).toContain('/tmp/dir')
+      expect(result).toContain('--append-system-prompt')
+      expect(result[result.length - 1]).toBe('hello')
     })
   })
 })
