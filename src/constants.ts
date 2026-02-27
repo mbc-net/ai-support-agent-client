@@ -53,6 +53,25 @@ export const UPDATE_CHECK_INTERVAL = 60 * 60 * 1000 // 1 hour
 export const UPDATE_CHECK_INITIAL_DELAY = 30_000 // 30 seconds
 export const NPM_INSTALL_TIMEOUT = 120_000 // 2 minutes
 
+// Anthropic API
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-6-20250514'
+export const ANTHROPIC_API_VERSION = '2023-06-01'
+export const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages'
+export const DEFAULT_MAX_TOKENS = 4096
+
+// Chat executor
+export const CHAT_TIMEOUT = 120_000
+export const CHAT_SIGKILL_DELAY = 5_000
+export const CLAUDE_DETECT_TIMEOUT_MS = 5_000
+export const DEFAULT_APPSYNC_TIMEOUT_MS = 300_000
+
+// Log truncation
+export const LOG_MESSAGE_LIMIT = 100
+export const LOG_PAYLOAD_LIMIT = 500
+export const LOG_RESULT_LIMIT = 300
+export const LOG_DEBUG_LIMIT = 200
+export const CHUNK_LOG_LIMIT = 100
+
 // API endpoint paths
 export const API_ENDPOINTS = {
   REGISTER: '/api/agent/register',

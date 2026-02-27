@@ -272,10 +272,19 @@ describe('chat-executor', () => {
       const result = await resultPromise
       expect(result.success).toBe(true)
 
-      expect(mockClient.submitChatChunk).toHaveBeenCalledWith('cmd-done', expect.objectContaining({
-        type: 'done',
-        content: 'output text',
-      }), 'agent-1')
+      // done chunk now includes JSON with text + metadata
+      const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+        (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+      )
+      expect(doneCall).toBeTruthy()
+      const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+      expect(doneContent.text).toBe('output text')
+      expect(doneContent.metadata).toEqual(expect.objectContaining({
+        args: ['-p'],
+        exitCode: 0,
+        hasStderr: false,
+      }))
+      expect(typeof doneContent.metadata.durationMs).toBe('number')
     })
 
     it('should send delta chunks for stdout data', async () => {
