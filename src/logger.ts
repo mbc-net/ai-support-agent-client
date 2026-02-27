@@ -10,7 +10,14 @@ const COLORS = {
 let verboseEnabled = false
 
 function timestamp(): string {
-  return new Date().toISOString().replace('T', ' ').substring(0, 19)
+  const now = new Date()
+  const y = now.getFullYear()
+  const mo = String(now.getMonth() + 1).padStart(2, '0')
+  const d = String(now.getDate()).padStart(2, '0')
+  const h = String(now.getHours()).padStart(2, '0')
+  const mi = String(now.getMinutes()).padStart(2, '0')
+  const s = String(now.getSeconds()).padStart(2, '0')
+  return `${y}-${mo}-${d} ${h}:${mi}:${s}`
 }
 
 function formatLog(level: string, color: string, message: string): string {

@@ -7,6 +7,8 @@ import {
   CHAT_TIMEOUT,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_MAX_TOKENS,
+  ERR_AGENT_ID_REQUIRED,
+  ERR_MESSAGE_REQUIRED,
   LOG_MESSAGE_LIMIT,
 } from '../constants'
 import { logger } from '../logger'
@@ -39,12 +41,12 @@ export async function executeApiChatCommand(
   agentId?: string,
 ): Promise<CommandResult> {
   if (!agentId) {
-    return { success: false, error: 'agentId is required for chat command' }
+    return { success: false, error: ERR_AGENT_ID_REQUIRED }
   }
 
   const message = parseString(payload.message)
   if (!message) {
-    return { success: false, error: 'message is required' }
+    return { success: false, error: ERR_MESSAGE_REQUIRED }
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY

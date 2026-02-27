@@ -2,7 +2,7 @@ import { spawn } from 'child_process'
 import os from 'os'
 
 import { ApiClient } from '../api-client'
-import { CHAT_SIGKILL_DELAY, CHAT_TIMEOUT, LOG_DEBUG_LIMIT, LOG_MESSAGE_LIMIT } from '../constants'
+import { CHAT_SIGKILL_DELAY, CHAT_TIMEOUT, ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED, LOG_DEBUG_LIMIT, LOG_MESSAGE_LIMIT } from '../constants'
 import { logger } from '../logger'
 import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
 import { getErrorMessage, parseString, truncateString } from '../utils'
@@ -37,7 +37,7 @@ export async function executeChatCommand(
   agentId?: string,
 ): Promise<CommandResult> {
   if (!agentId) {
-    return { success: false, error: 'agentId is required for chat command' }
+    return { success: false, error: ERR_AGENT_ID_REQUIRED }
   }
 
   const mode = activeChatMode ?? 'claude_code'
@@ -65,7 +65,7 @@ async function executeClaudeCodeChat(
 ): Promise<CommandResult> {
   const message = parseString(payload.message)
   if (!message) {
-    return { success: false, error: 'message is required' }
+    return { success: false, error: ERR_MESSAGE_REQUIRED }
   }
 
   logger.info(`[chat] Starting chat command [${commandId}]: message="${truncateString(message, LOG_MESSAGE_LIMIT)}"`)

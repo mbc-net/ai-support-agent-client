@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 
 import type { ApiClient } from '../../src/api-client'
 import { executeApiChatCommand } from '../../src/commands/api-chat-executor'
+import { ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED } from '../../src/constants'
 import type { AgentServerConfig, ChatPayload } from '../../src/types'
 
 jest.mock('../../src/logger')
@@ -54,7 +55,7 @@ describe('api-chat-executor', () => {
     const result = await executeApiChatCommand(basePayload, 'cmd-0', mockClient)
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toBe('agentId is required for chat command')
+      expect(result.error).toBe(ERR_AGENT_ID_REQUIRED)
     }
   })
 
@@ -68,7 +69,7 @@ describe('api-chat-executor', () => {
     )
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toBe('message is required')
+      expect(result.error).toBe(ERR_MESSAGE_REQUIRED)
     }
   })
 
