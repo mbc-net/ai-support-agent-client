@@ -72,6 +72,10 @@ export const LOG_RESULT_LIMIT = 300
 export const LOG_DEBUG_LIMIT = 200
 export const CHUNK_LOG_LIMIT = 100
 
+// Chat validation error messages
+export const ERR_AGENT_ID_REQUIRED = 'agentId is required for chat command'
+export const ERR_MESSAGE_REQUIRED = 'message is required'
+
 // API endpoint paths
 export const API_ENDPOINTS = {
   REGISTER: '/api/agent/register',

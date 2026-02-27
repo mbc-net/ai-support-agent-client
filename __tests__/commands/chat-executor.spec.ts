@@ -2,6 +2,7 @@ import os from 'os'
 
 import type { ApiClient } from '../../src/api-client'
 import { buildClaudeArgs, buildCleanEnv, executeChatCommand } from '../../src/commands/chat-executor'
+import { ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED } from '../../src/constants'
 import type { AgentServerConfig, ChatPayload } from '../../src/types'
 
 jest.mock('../../src/logger')
@@ -104,7 +105,7 @@ describe('chat-executor', () => {
       const result = await executeChatCommand(basePayload, 'cmd-no-agent', mockClient)
       expect(result.success).toBe(false)
       if (!result.success) {
-        expect(result.error).toBe('agentId is required for chat command')
+        expect(result.error).toBe(ERR_AGENT_ID_REQUIRED)
       }
     })
 
@@ -112,7 +113,7 @@ describe('chat-executor', () => {
       const result = await executeChatCommand(basePayload, 'cmd-empty-agent', mockClient, undefined, undefined, '')
       expect(result.success).toBe(false)
       if (!result.success) {
-        expect(result.error).toBe('agentId is required for chat command')
+        expect(result.error).toBe(ERR_AGENT_ID_REQUIRED)
       }
     })
   })
@@ -129,7 +130,7 @@ describe('chat-executor', () => {
       )
       expect(result.success).toBe(false)
       if (!result.success) {
-        expect(result.error).toBe('message is required')
+        expect(result.error).toBe(ERR_MESSAGE_REQUIRED)
       }
     })
   })
