@@ -160,12 +160,18 @@ describe('api-chat-executor', () => {
       type: 'delta',
       content: ' there',
     }, 'agent-1')
-    // done chunk
-    expect(mockClient.submitChatChunk).toHaveBeenCalledWith('cmd-3', {
-      index: 2,
-      type: 'done',
-      content: 'Hello there',
-    }, 'agent-1')
+    // done chunk (now includes usage JSON)
+    const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+      (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+    )
+    expect(doneCall).toBeTruthy()
+    const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+    expect(doneContent.text).toBe('Hello there')
+    expect(doneContent.usage).toEqual({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+    })
   })
 
   it('should use default maxTokens when config is not provided', async () => {
@@ -343,6 +349,81 @@ describe('api-chat-executor', () => {
     expect(mockClient.submitChatChunk).toHaveBeenCalledWith('cmd-err-chunk', expect.objectContaining({
       type: 'error',
     }), 'agent-1')
+  })
+
+  it('should extract usage from message_start and message_delta events', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const resultPromise = executeApiChatCommand(
+      basePayload, 'cmd-usage', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // message_start with input_tokens
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":42}}}\n\n',
+    ))
+    // content
+    stream.emit('data', Buffer.from(
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+    ))
+    // message_delta with output_tokens
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_delta","usage":{"output_tokens":15}}\n\n',
+    ))
+    stream.emit('end')
+
+    const result = await resultPromise
+    expect(result.success).toBe(true)
+
+    // done chunk should contain usage JSON
+    const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+      (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+    )
+    expect(doneCall).toBeTruthy()
+    const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+    expect(doneContent.text).toBe('hi')
+    expect(doneContent.usage).toEqual({
+      totalInputTokens: 42,
+      totalOutputTokens: 15,
+      totalTokens: 57,
+    })
+  })
+
+  it('should handle message_start without usage gracefully', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const resultPromise = executeApiChatCommand(
+      basePayload, 'cmd-no-usage', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // message_start without usage
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_start","message":{}}\n\n',
+    ))
+    // message_delta without usage
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_delta"}\n\n',
+    ))
+    stream.emit('end')
+
+    const result = await resultPromise
+    expect(result.success).toBe(true)
+
+    const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+      (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+    )
+    const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+    expect(doneContent.usage).toEqual({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+    })
   })
 
   it('should handle incomplete SSE lines across chunks', async () => {

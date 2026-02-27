@@ -1,13 +1,31 @@
 import axios from 'axios'
 
 import { ApiClient } from '../api-client'
+import {
+  ANTHROPIC_API_URL,
+  ANTHROPIC_API_VERSION,
+  CHAT_TIMEOUT,
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_MAX_TOKENS,
+  LOG_MESSAGE_LIMIT,
+} from '../constants'
 import { logger } from '../logger'
 import type { AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
-import { getErrorMessage, parseString } from '../utils'
+import { getErrorMessage, parseString, truncateString } from '../utils'
 
 import { createChunkSender } from './shared-chat-utils'
 
-const DEFAULT_MODEL = 'claude-sonnet-4-6-20250514'
+/** Anthropic API のトークン使用量 */
+interface ApiUsage {
+  inputTokens: number
+  outputTokens: number
+}
+
+/** callAnthropicApi の戻り値 */
+interface ApiChatResult {
+  text: string
+  usage: ApiUsage
+}
 
 /**
  * Anthropic API を直接呼び出してチャットメッセージを処理する
@@ -38,14 +56,14 @@ export async function executeApiChatCommand(
   }
 
   logger.info(
-    `[api-chat] Starting API chat command [${commandId}]: message="${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`,
+    `[api-chat] Starting API chat command [${commandId}]: message="${truncateString(message, LOG_MESSAGE_LIMIT)}"`,
   )
 
   const { sendChunk, getChunkIndex } = createChunkSender(commandId, client, agentId, 'api-chat')
 
   try {
-    const model = config?.claudeCodeConfig?.model ?? DEFAULT_MODEL
-    const maxTokens = config?.claudeCodeConfig?.maxTokens ?? 4096
+    const model = config?.claudeCodeConfig?.model ?? DEFAULT_ANTHROPIC_MODEL
+    const maxTokens = config?.claudeCodeConfig?.maxTokens ?? DEFAULT_MAX_TOKENS
     const systemPrompt = config?.claudeCodeConfig?.systemPrompt
 
     const result = await callAnthropicApi(
@@ -58,10 +76,20 @@ export async function executeApiChatCommand(
     )
 
     logger.info(
-      `[api-chat] API chat command completed [${commandId}]: output=${result.length} chars, ${getChunkIndex()} chunks sent`,
+      `[api-chat] API chat command completed [${commandId}]: output=${result.text.length} chars, ${getChunkIndex()} chunks sent, tokens: in=${result.usage.inputTokens} out=${result.usage.outputTokens}`,
     )
-    await sendChunk('done', result)
-    return { success: true, data: result }
+
+    // done チャンクに usage 情報を含める
+    const doneContent = JSON.stringify({
+      text: result.text,
+      usage: {
+        totalInputTokens: result.usage.inputTokens,
+        totalOutputTokens: result.usage.outputTokens,
+        totalTokens: result.usage.inputTokens + result.usage.outputTokens,
+      },
+    })
+    await sendChunk('done', doneContent)
+    return { success: true, data: result.text }
   } catch (error) {
     const errorMessage = getErrorMessage(error)
     logger.error(`[api-chat] API chat command failed [${commandId}]: ${errorMessage}`)
@@ -80,7 +108,7 @@ async function callAnthropicApi(
   maxTokens: number,
   systemPrompt: string | undefined,
   sendChunk: (type: ChatChunkType, content: string) => Promise<void>,
-): Promise<string> {
+): Promise<ApiChatResult> {
   const body: Record<string, unknown> = {
     model,
     max_tokens: maxTokens,
@@ -92,22 +120,23 @@ async function callAnthropicApi(
   }
 
   const response = await axios.post(
-    'https://api.anthropic.com/v1/messages',
+    ANTHROPIC_API_URL,
     body,
     {
       headers: {
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+        'anthropic-version': ANTHROPIC_API_VERSION,
         'content-type': 'application/json',
       },
       responseType: 'stream',
-      timeout: 120_000,
+      timeout: CHAT_TIMEOUT,
     },
   )
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<ApiChatResult>((resolve, reject) => {
     let fullOutput = ''
     let buffer = ''
+    const usage: ApiUsage = { inputTokens: 0, outputTokens: 0 }
 
     const stream = response.data as NodeJS.ReadableStream
 
@@ -125,7 +154,20 @@ async function callAnthropicApi(
 
         try {
           const event = JSON.parse(data) as Record<string, unknown>
-          if (event.type === 'content_block_delta') {
+          if (event.type === 'message_start') {
+            // message_start イベントから input_tokens を取得
+            const msg = event.message as Record<string, unknown> | undefined
+            const msgUsage = msg?.usage as Record<string, unknown> | undefined
+            if (typeof msgUsage?.input_tokens === 'number') {
+              usage.inputTokens = msgUsage.input_tokens
+            }
+          } else if (event.type === 'message_delta') {
+            // message_delta イベントから output_tokens を取得
+            const deltaUsage = event.usage as Record<string, unknown> | undefined
+            if (typeof deltaUsage?.output_tokens === 'number') {
+              usage.outputTokens = deltaUsage.output_tokens
+            }
+          } else if (event.type === 'content_block_delta') {
             const delta = event.delta as Record<string, unknown> | undefined
             if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
               fullOutput += delta.text
@@ -146,7 +188,7 @@ async function callAnthropicApi(
     })
 
     stream.on('end', () => {
-      resolve(fullOutput)
+      resolve({ text: fullOutput, usage })
     })
 
     stream.on('error', (error: Error) => {

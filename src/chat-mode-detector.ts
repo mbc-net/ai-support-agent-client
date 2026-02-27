@@ -1,9 +1,8 @@
 import { execFile } from 'child_process'
 
+import { CLAUDE_DETECT_TIMEOUT_MS } from './constants'
 import { logger } from './logger'
 import type { AgentChatMode } from './types'
-
-const CLAUDE_DETECT_TIMEOUT_MS = 5_000
 
 /**
  * 利用可能なチャットモードを検出する

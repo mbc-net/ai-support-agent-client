@@ -1,7 +1,8 @@
 import { ApiClient } from '../api-client'
+import { CHUNK_LOG_LIMIT } from '../constants'
 import { logger } from '../logger'
 import type { ChatChunkType } from '../types'
-import { getErrorMessage } from '../utils'
+import { getErrorMessage, truncateString } from '../utils'
 
 export interface ChunkSenderOptions {
   debugLog?: boolean
@@ -35,7 +36,7 @@ export function createChunkSender(
   ): Promise<void> => {
     try {
       if (options?.debugLog) {
-        logger.debug(`[${logTag}] Sending chunk #${chunkIndex} (${type}) [${commandId}]: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`)
+        logger.debug(`[${logTag}] Sending chunk #${chunkIndex} (${type}) [${commandId}]: ${truncateString(content, CHUNK_LOG_LIMIT)}`)
       }
       await client.submitChatChunk(commandId, {
         index: chunkIndex++,

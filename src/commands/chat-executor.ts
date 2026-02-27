@@ -2,12 +2,24 @@ import { spawn } from 'child_process'
 import os from 'os'
 
 import { ApiClient } from '../api-client'
+import { CHAT_SIGKILL_DELAY, CHAT_TIMEOUT, LOG_DEBUG_LIMIT, LOG_MESSAGE_LIMIT } from '../constants'
 import { logger } from '../logger'
 import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
-import { getErrorMessage, parseString } from '../utils'
+import { getErrorMessage, parseString, truncateString } from '../utils'
 
 import { executeApiChatCommand } from './api-chat-executor'
 import { createChunkSender } from './shared-chat-utils'
+
+/** Claude Code CLI の実行結果 */
+interface ClaudeCodeResult {
+  text: string
+  metadata: {
+    args: string[]
+    exitCode: number | null
+    hasStderr: boolean
+    durationMs: number
+  }
+}
 
 /**
  * エージェントチャットモードに応じてチャットメッセージを処理する
@@ -56,7 +68,7 @@ async function executeClaudeCodeChat(
     return { success: false, error: 'message is required' }
   }
 
-  logger.info(`[chat] Starting chat command [${commandId}]: message="${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`)
+  logger.info(`[chat] Starting chat command [${commandId}]: message="${truncateString(message, LOG_MESSAGE_LIMIT)}"`)
 
   const { sendChunk, getChunkIndex } = createChunkSender(commandId, client, agentId, 'chat', { debugLog: true })
 
@@ -67,16 +79,61 @@ async function executeClaudeCodeChat(
     logger.debug(`[chat] Spawning claude CLI for command [${commandId}]${allowedTools?.length ? ` with allowedTools: ${allowedTools.join(', ')}` : ' (no allowedTools)'}${addDirs?.length ? ` with addDirs: ${addDirs.join(', ')}` : ''}${locale ? ` locale=${locale}` : ''}`)
     logger.debug(`[chat] serverConfig.claudeCodeConfig: ${JSON.stringify(serverConfig?.claudeCodeConfig ?? null)}`)
     const result = await runClaudeCode(message, sendChunk, allowedTools, addDirs, locale)
-    logger.info(`[chat] Chat command completed [${commandId}]: output=${result.length} chars, ${getChunkIndex()} chunks sent`)
-    // 完了チャンクを送信
-    await sendChunk('done', result)
-    return { success: true, data: result }
+    logger.info(`[chat] Chat command completed [${commandId}]: output=${result.text.length} chars, ${getChunkIndex()} chunks sent, duration=${result.metadata.durationMs}ms`)
+    // 完了チャンクを送信（metadata を含める）
+    const doneContent = JSON.stringify({
+      text: result.text,
+      metadata: result.metadata,
+    })
+    await sendChunk('done', doneContent)
+    return { success: true, data: result.text }
   } catch (error) {
     const errorMessage = getErrorMessage(error)
     logger.error(`[chat] Chat command failed [${commandId}]: ${errorMessage}`)
     await sendChunk('error', errorMessage)
     return { success: false, error: errorMessage }
   }
+}
+
+/** CLAUDECODE / CLAUDE_CODE_* 環境変数を除外した env を構築 */
+export function buildCleanEnv(): Record<string, string> {
+  const cleanEnv: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) continue
+    if (value !== undefined) cleanEnv[key] = value
+  }
+  return cleanEnv
+}
+
+/** Claude CLI の引数配列を構築 */
+export function buildClaudeArgs(
+  message: string,
+  options?: {
+    allowedTools?: string[]
+    addDirs?: string[]
+    locale?: string
+  },
+): string[] {
+  const args = ['-p']
+  if (options?.allowedTools?.length) {
+    for (const tool of options.allowedTools) {
+      args.push('--allowedTools', tool)
+    }
+  }
+  if (options?.addDirs?.length) {
+    for (const dir of options.addDirs) {
+      const resolved = dir.replace(/^~/, os.homedir())
+      args.push('--add-dir', resolved)
+    }
+  }
+  if (options?.locale) {
+    const langPrompt = options.locale === 'ja'
+      ? 'Always respond in Japanese. Use Japanese for all explanations and communications.'
+      : 'Always respond in English. Use English for all explanations and communications.'
+    args.push('--append-system-prompt', langPrompt)
+  }
+  args.push(message)
+  return args
 }
 
 /**
@@ -88,36 +145,14 @@ async function runClaudeCode(
   allowedTools?: string[],
   addDirs?: string[],
   locale?: string,
-): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+): Promise<ClaudeCodeResult> {
+  return new Promise<ClaudeCodeResult>((resolve, reject) => {
+    const startTime = Date.now()
     // claude CLI が利用可能か確認し、print モードで実行
     // Claude Code セッション内からの起動時にネスト検出やSSEポート干渉を回避するため、
     // CLAUDECODE および CLAUDE_CODE_* 環境変数を除外
-    const cleanEnv: Record<string, string> = {}
-    for (const [key, value] of Object.entries(process.env)) {
-      if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) continue
-      if (value !== undefined) cleanEnv[key] = value
-    }
-
-    const args = ['-p']
-    if (allowedTools && allowedTools.length > 0) {
-      for (const tool of allowedTools) {
-        args.push('--allowedTools', tool)
-      }
-    }
-    if (addDirs && addDirs.length > 0) {
-      for (const dir of addDirs) {
-        const resolved = dir.replace(/^~/, os.homedir())
-        args.push('--add-dir', resolved)
-      }
-    }
-    if (locale) {
-      const langPrompt = locale === 'ja'
-        ? 'Always respond in Japanese. Use Japanese for all explanations and communications.'
-        : 'Always respond in English. Use English for all explanations and communications.'
-      args.push('--append-system-prompt', langPrompt)
-    }
-    args.push(message)
+    const cleanEnv = buildCleanEnv()
+    const args = buildClaudeArgs(message, { allowedTools, addDirs, locale })
 
     const child = spawn('claude', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -132,7 +167,7 @@ async function runClaudeCode(
     // タイムアウト: 120秒で応答がなければ強制終了
     let sigkillTimer: NodeJS.Timeout | undefined
     const timeout = setTimeout(() => {
-      logger.warn(`[chat] claude CLI timed out after 120s (pid=${child.pid}), sending SIGTERM`)
+      logger.warn(`[chat] claude CLI timed out after ${CHAT_TIMEOUT / 1000}s (pid=${child.pid}), sending SIGTERM`)
       child.kill('SIGTERM')
       // SIGTERM後5秒で応答なければSIGKILL
       sigkillTimer = setTimeout(() => {
@@ -140,8 +175,8 @@ async function runClaudeCode(
           logger.warn(`[chat] claude CLI still running after SIGTERM, sending SIGKILL (pid=${child.pid})`)
           child.kill('SIGKILL')
         }
-      }, 5_000)
-    }, 120_000)
+      }, CHAT_SIGKILL_DELAY)
+    }, CHAT_TIMEOUT)
 
     child.stdout.on('data', (data: Buffer) => {
       const text = data.toString()
@@ -153,7 +188,7 @@ async function runClaudeCode(
     child.stderr.on('data', (data: Buffer) => {
       const text = data.toString()
       stderrOutput += text
-      logger.debug(`[chat] claude CLI stderr: ${text.substring(0, 200)}`)
+      logger.debug(`[chat] claude CLI stderr: ${text.substring(0, LOG_DEBUG_LIMIT)}`)
     })
 
     child.on('error', (error) => {
@@ -173,9 +208,20 @@ async function runClaudeCode(
     child.on('close', (code) => {
       clearTimeout(timeout)
       if (sigkillTimer) clearTimeout(sigkillTimer)
-      logger.debug(`[chat] claude CLI exited (pid=${child.pid}, code=${code}, stdout=${fullOutput.length}b, stderr=${stderrOutput.length}b)`)
+      const durationMs = Date.now() - startTime
+      // メッセージ本文を除いた引数（監査用）
+      const metadataArgs = args.slice(0, -1)
+      logger.debug(`[chat] claude CLI exited (pid=${child.pid}, code=${code}, stdout=${fullOutput.length}b, stderr=${stderrOutput.length}b, duration=${durationMs}ms)`)
       if (code === 0) {
-        resolve(fullOutput)
+        resolve({
+          text: fullOutput,
+          metadata: {
+            args: metadataArgs,
+            exitCode: code,
+            hasStderr: stderrOutput.length > 0,
+            durationMs,
+          },
+        })
       } else {
         reject(
           new Error(

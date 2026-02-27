@@ -1,4 +1,5 @@
 import type { ApiClient } from '../api-client'
+import { LOG_DEBUG_LIMIT } from '../constants'
 import { logger } from '../logger'
 import type { AgentChatMode, AgentCommandType, AgentServerConfig, CommandDispatch, CommandResult } from '../types'
 import { getErrorMessage } from '../utils'
@@ -45,7 +46,7 @@ export async function executeCommand(
     switch (type) {
       case 'execute_command': {
         const cmd = (p as Record<string, unknown>).command
-        logger.debug(`[shell] command="${String(cmd ?? '').substring(0, 200)}"`)
+        logger.debug(`[shell] command="${String(cmd ?? '').substring(0, LOG_DEBUG_LIMIT)}"`)
         return await executeShellCommand(p)
       }
       case 'file_read': {

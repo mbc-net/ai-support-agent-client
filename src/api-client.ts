@@ -65,6 +65,7 @@ export class ApiClient {
     updateError?: string,
     availableChatModes?: string[],
     activeChatMode?: string,
+    ipAddress?: string,
   ): Promise<void> {
     logger.debug('Sending heartbeat')
     await this.retry.withRetry(async () => {
@@ -76,6 +77,7 @@ export class ApiClient {
         ...(updateError && { updateError }),
         ...(availableChatModes !== undefined && { availableChatModes }),
         ...(activeChatMode !== undefined && { activeChatMode }),
+        ...(ipAddress && { ipAddress }),
       })
     })
   }

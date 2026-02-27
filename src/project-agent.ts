@@ -8,6 +8,7 @@ import { t } from './i18n'
 import { logger } from './logger'
 import { getSystemInfo, getLocalIpAddress } from './system-info'
 import type { AgentChatMode, AgentServerConfig, ProjectRegistration, RegisterResponse } from './types'
+import { LOG_PAYLOAD_LIMIT, LOG_RESULT_LIMIT } from './constants'
 import { getErrorMessage } from './utils'
 
 export interface ProjectAgentOptions {
@@ -58,28 +59,7 @@ export class ProjectAgent {
   }
 
   private async registerAndStart(): Promise<void> {
-    // チャットモード検出
-    this.availableChatModes = await detectAvailableChatModes()
-    logger.info(`${this.prefix} Available chat modes: ${JSON.stringify(this.availableChatModes)}`)
-
-    // サーバーからエージェント設定を取得
-    try {
-      this.serverConfig = await this.client.getConfig()
-      logger.info(`${this.prefix} Server config loaded: chatMode=${this.serverConfig.chatMode}`)
-      if (this.serverConfig.claudeCodeConfig) {
-        logger.debug(`${this.prefix} claudeCodeConfig: allowedTools=[${this.serverConfig.claudeCodeConfig.allowedTools?.join(', ') ?? ''}], addDirs=[${this.serverConfig.claudeCodeConfig.addDirs?.join(', ') ?? ''}]`)
-      }
-    } catch (error) {
-      logger.warn(`${this.prefix} Failed to load server config, using defaults: ${getErrorMessage(error)}`)
-    }
-
-    // アクティブチャットモードを決定
-    this.activeChatMode = resolveActiveChatMode(
-      this.availableChatModes,
-      this.localAgentChatMode,
-      this.serverConfig?.defaultAgentChatMode,
-    )
-    logger.info(`${this.prefix} Active chat mode: ${this.activeChatMode ?? 'none'}`)
+    await this.refreshChatMode(true)
 
     let result: RegisterResponse
     try {
@@ -147,41 +127,7 @@ export class ProjectAgent {
 
         for (const cmd of pending) {
           logger.info(t('runner.commandReceived', { prefix: this.prefix, type: cmd.type, commandId: cmd.commandId }))
-
-          try {
-            const detail = await this.client.getCommand(cmd.commandId, this.agentId)
-            logger.debug(`${this.prefix} Command detail [${cmd.commandId}]: type=${detail.type}, payload=${JSON.stringify(detail.payload).substring(0, 500)}`)
-            const result = await executeCommand(detail.type, detail.payload, {
-              commandId: cmd.commandId,
-              client: this.client,
-              serverConfig: this.serverConfig ?? undefined,
-              activeChatMode: this.activeChatMode,
-              agentId: this.agentId,
-            })
-            logger.debug(`${this.prefix} Command result [${cmd.commandId}]: success=${result.success}, data=${JSON.stringify(result.success ? result.data : result.error).substring(0, 300)}`)
-            await this.client.submitResult(cmd.commandId, result, this.agentId)
-            logger.info(
-              t('runner.commandDone', {
-                prefix: this.prefix,
-                commandId: cmd.commandId,
-                result: result.success ? 'success' : 'failed',
-              }),
-            )
-          } catch (error) {
-            const message = getErrorMessage(error)
-            logger.error(
-              t('runner.commandError', { prefix: this.prefix, commandId: cmd.commandId, message }),
-            )
-
-            try {
-              await this.client.submitResult(cmd.commandId, {
-                success: false,
-                error: message,
-              }, this.agentId)
-            } catch {
-              logger.error(t('runner.resultSendFailed', { prefix: this.prefix }))
-            }
-          }
+          await this.processCommand(cmd.commandId)
         }
       } catch (error) {
         logger.debug(`${this.prefix} Polling error: ${getErrorMessage(error)}`)
@@ -198,22 +144,7 @@ export class ProjectAgent {
   private startHeartbeat(): void {
     const sendHeartbeat = async (): Promise<void> => {
       try {
-        // チャットモード再検出
-        this.availableChatModes = await detectAvailableChatModes()
-
-        // サーバー設定リフレッシュ（管理画面で変更されている可能性）
-        try {
-          this.serverConfig = await this.client.getConfig()
-        } catch {
-          // サーバー設定取得失敗は無視（前回の設定を維持）
-        }
-
-        // アクティブチャットモード再計算
-        this.activeChatMode = resolveActiveChatMode(
-          this.availableChatModes,
-          this.localAgentChatMode,
-          this.serverConfig?.defaultAgentChatMode,
-        )
+        await this.refreshChatMode(false)
 
         await this.client.heartbeat(
           this.agentId,
@@ -221,6 +152,7 @@ export class ProjectAgent {
           undefined,
           this.availableChatModes,
           this.activeChatMode,
+          getLocalIpAddress(),
         )
         logger.debug(`${this.prefix} Heartbeat sent (activeChatMode=${this.activeChatMode ?? 'none'})`)
       } catch (error) {
@@ -236,7 +168,7 @@ export class ProjectAgent {
   }
 
   private async handleNotification(notification: AppSyncNotification): Promise<void> {
-    logger.debug(`${this.prefix} Notification received: action=${notification.action}, content=${JSON.stringify(notification.content ?? {}).substring(0, 300)}`)
+    logger.debug(`${this.prefix} Notification received: action=${notification.action}, content=${JSON.stringify(notification.content ?? {}).substring(0, LOG_RESULT_LIMIT)}`)
 
     if (notification.action !== 'agent-command') {
       logger.debug(`${this.prefix} Ignoring notification with action: ${notification.action}`)
@@ -255,9 +187,13 @@ export class ProjectAgent {
       commandId,
     }))
 
+    await this.processCommand(commandId)
+  }
+
+  private async processCommand(commandId: string): Promise<void> {
     try {
       const detail = await this.client.getCommand(commandId, this.agentId)
-      logger.debug(`${this.prefix} Command detail [${commandId}]: type=${detail.type}, payload=${JSON.stringify(detail.payload).substring(0, 500)}`)
+      logger.debug(`${this.prefix} Command detail [${commandId}]: type=${detail.type}, payload=${JSON.stringify(detail.payload).substring(0, LOG_PAYLOAD_LIMIT)}`)
       const result = await executeCommand(detail.type, detail.payload, {
         commandId,
         client: this.client,
@@ -265,7 +201,7 @@ export class ProjectAgent {
         activeChatMode: this.activeChatMode,
         agentId: this.agentId,
       })
-      logger.debug(`${this.prefix} Command result [${commandId}]: success=${result.success}, data=${JSON.stringify(result.success ? result.data : result.error).substring(0, 300)}`)
+      logger.debug(`${this.prefix} Command result [${commandId}]: success=${result.success}, data=${JSON.stringify(result.success ? result.data : result.error).substring(0, LOG_RESULT_LIMIT)}`)
       await this.client.submitResult(commandId, result, this.agentId)
       logger.info(t('runner.commandDone', {
         prefix: this.prefix,
@@ -286,6 +222,36 @@ export class ProjectAgent {
       } catch {
         logger.error(t('runner.resultSendFailed', { prefix: this.prefix }))
       }
+    }
+  }
+
+  private async refreshChatMode(verbose: boolean): Promise<void> {
+    this.availableChatModes = await detectAvailableChatModes()
+    if (verbose) {
+      logger.info(`${this.prefix} Available chat modes: ${JSON.stringify(this.availableChatModes)}`)
+    }
+
+    try {
+      this.serverConfig = await this.client.getConfig()
+      if (verbose) {
+        logger.info(`${this.prefix} Server config loaded: chatMode=${this.serverConfig.chatMode}`)
+        if (this.serverConfig.claudeCodeConfig) {
+          logger.debug(`${this.prefix} claudeCodeConfig: allowedTools=[${this.serverConfig.claudeCodeConfig.allowedTools?.join(', ') ?? ''}], addDirs=[${this.serverConfig.claudeCodeConfig.addDirs?.join(', ') ?? ''}]`)
+        }
+      }
+    } catch (error) {
+      if (verbose) {
+        logger.warn(`${this.prefix} Failed to load server config, using defaults: ${getErrorMessage(error)}`)
+      }
+    }
+
+    this.activeChatMode = resolveActiveChatMode(
+      this.availableChatModes,
+      this.localAgentChatMode,
+      this.serverConfig?.defaultAgentChatMode,
+    )
+    if (verbose) {
+      logger.info(`${this.prefix} Active chat mode: ${this.activeChatMode ?? 'none'}`)
     }
   }
 
