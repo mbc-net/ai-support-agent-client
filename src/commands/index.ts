@@ -1,7 +1,7 @@
 import type { ApiClient } from '../api-client'
 import { LOG_DEBUG_LIMIT } from '../constants'
 import { logger } from '../logger'
-import type { AgentChatMode, AgentCommandType, AgentServerConfig, CommandDispatch, CommandResult } from '../types'
+import type { AgentChatMode, AgentCommandType, AgentServerConfig, CommandDispatch, CommandResult, ProjectConfigResponse } from '../types'
 import { getErrorMessage } from '../utils'
 
 import { executeChatCommand } from './chat-executor'
@@ -16,6 +16,10 @@ export interface ExecuteCommandOptions {
   serverConfig?: AgentServerConfig
   activeChatMode?: AgentChatMode
   agentId?: string
+  projectDir?: string
+  projectConfig?: ProjectConfigResponse
+  onSetup?: () => Promise<void>
+  onConfigSync?: () => Promise<void>
 }
 
 // Overload: type-safe discriminated union
@@ -75,7 +79,19 @@ export async function executeCommand(
         if (!opts?.commandId || !opts?.client) {
           return { success: false, error: 'chat command requires commandId and client' }
         }
-        return await executeChatCommand(p, opts.commandId, opts.client, opts.serverConfig, opts.activeChatMode, opts.agentId)
+        return await executeChatCommand(p, opts.commandId, opts.client, opts.serverConfig, opts.activeChatMode, opts.agentId, opts.projectDir, opts.projectConfig)
+      case 'setup':
+        if (!opts?.onSetup) {
+          return { success: false, error: 'setup command requires onSetup callback' }
+        }
+        await opts.onSetup()
+        return { success: true, data: 'setup completed' }
+      case 'config_sync':
+        if (!opts?.onConfigSync) {
+          return { success: false, error: 'config_sync command requires onConfigSync callback' }
+        }
+        await opts.onConfigSync()
+        return { success: true, data: 'config sync completed' }
       default:
         logger.warn(`Unknown command type: ${type}`)
         return { success: false, error: `Unknown command type: ${type}` }

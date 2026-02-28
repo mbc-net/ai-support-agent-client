@@ -3,9 +3,25 @@ import os from 'os'
 import type { ApiClient } from '../../src/api-client'
 import { buildClaudeArgs, buildCleanEnv, executeChatCommand } from '../../src/commands/chat-executor'
 import { ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED } from '../../src/constants'
-import type { AgentServerConfig, ChatPayload } from '../../src/types'
+import type { AgentServerConfig, ChatPayload, ProjectConfigResponse } from '../../src/types'
 
 jest.mock('../../src/logger')
+
+// Mock project-dir
+jest.mock('../../src/project-dir', () => ({
+  getAutoAddDirs: jest.fn().mockReturnValue(['/mock/repos', '/mock/docs']),
+}))
+
+// Mock aws-profile
+jest.mock('../../src/aws-profile', () => ({
+  writeAwsCredentials: jest.fn(),
+  buildAwsProfileEnv: jest.fn().mockReturnValue({
+    AWS_CONFIG_FILE: '/mock/.ai-support-agent/aws/config',
+    AWS_SHARED_CREDENTIALS_FILE: '/mock/.ai-support-agent/aws/credentials',
+    AWS_PROFILE: 'TEST-dev',
+    AWS_DEFAULT_REGION: 'ap-northeast-1',
+  }),
+}))
 
 // Mock api-chat-executor
 jest.mock('../../src/commands/api-chat-executor', () => ({
@@ -746,6 +762,242 @@ describe('chat-executor', () => {
       expect(result).toContain('/tmp/dir')
       expect(result).toContain('--append-system-prompt')
       expect(result[result.length - 1]).toBe('hello')
+    })
+  })
+
+  describe('AWS profile mode', () => {
+    function createMockProcess() {
+      const handlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+      const stdoutHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+      const stderrHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+
+      return {
+        pid: 12345,
+        killed: false,
+        kill: jest.fn(),
+        stdout: {
+          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+            stdoutHandlers[event] = stdoutHandlers[event] || []
+            stdoutHandlers[event].push(cb)
+          }),
+        },
+        stderr: {
+          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+            stderrHandlers[event] = stderrHandlers[event] || []
+            stderrHandlers[event].push(cb)
+          }),
+        },
+        on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+          handlers[event] = handlers[event] || []
+          handlers[event].push(cb)
+        }),
+        emit(event: string, ...args: unknown[]) {
+          for (const cb of handlers[event] || []) cb(...args)
+        },
+        emitStdout(event: string, ...args: unknown[]) {
+          for (const cb of stdoutHandlers[event] || []) cb(...args)
+        },
+      }
+    }
+
+    const projectConfig: ProjectConfigResponse = {
+      configHash: 'test-hash',
+      project: { projectCode: 'TEST', projectName: 'Test Project' },
+      agent: {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: true,
+        externalAgentEnabled: true,
+        allowedTools: [],
+      },
+      aws: {
+        accounts: [
+          {
+            id: '1',
+            name: 'dev',
+            description: 'Dev account',
+            region: 'ap-northeast-1',
+            accountId: '123456789012',
+            auth: { method: 'access_key' },
+            isDefault: true,
+          },
+        ],
+      },
+    }
+
+    it('should use profile mode when projectDir and projectConfig.aws.accounts are present', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const clientWithAws = {
+        submitChatChunk: jest.fn().mockResolvedValue(undefined),
+        getAwsCredentials: jest.fn().mockResolvedValue({
+          accessKeyId: 'AKIAPROFILE',
+          secretAccessKey: 'secretProfile',
+          region: 'ap-northeast-1',
+        }),
+      } as unknown as ApiClient
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-profile', clientWithAws, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', projectConfig,
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      // Should have called getAwsCredentials for the account
+      expect(clientWithAws.getAwsCredentials).toHaveBeenCalledWith('123456789012')
+
+      // Should have used profile env (from mocked buildAwsProfileEnv)
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).toHaveProperty('AWS_CONFIG_FILE')
+      expect(env).toHaveProperty('AWS_SHARED_CREDENTIALS_FILE')
+      expect(env).toHaveProperty('AWS_PROFILE', 'TEST-dev')
+    })
+
+    it('should fall back to legacy mode when no projectConfig', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const clientWithAws = {
+        submitChatChunk: jest.fn().mockResolvedValue(undefined),
+        getAwsCredentials: jest.fn().mockResolvedValue({
+          accessKeyId: 'AKIALEGACY',
+          secretAccessKey: 'secretLegacy',
+          sessionToken: 'tokenLegacy',
+          region: 'us-east-1',
+        }),
+      } as unknown as ApiClient
+
+      const payload: ChatPayload = { message: 'Hello', awsAccountId: 'legacy-account' }
+
+      const resultPromise = executeChatCommand(
+        payload, 'cmd-legacy', clientWithAws, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', undefined, // no projectConfig
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      // Should use legacy env vars
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).toHaveProperty('AWS_ACCESS_KEY_ID', 'AKIALEGACY')
+      expect(env).toHaveProperty('AWS_SECRET_ACCESS_KEY', 'secretLegacy')
+    })
+
+    it('should continue without AWS env when all credential fetches fail in profile mode', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const clientWithFailingAws = {
+        submitChatChunk: jest.fn().mockResolvedValue(undefined),
+        getAwsCredentials: jest.fn().mockRejectedValue(new Error('Not found')),
+      } as unknown as ApiClient
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-profile-fail', clientWithFailingAws, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', projectConfig,
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      // Should NOT have profile env vars (all credentials failed)
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).not.toHaveProperty('AWS_PROFILE')
+    })
+  })
+
+  describe('project directory auto-add dirs', () => {
+    function createMockProcess() {
+      const handlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+      const stdoutHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+      const stderrHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+
+      return {
+        pid: 12345,
+        killed: false,
+        kill: jest.fn(),
+        stdout: {
+          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+            stdoutHandlers[event] = stdoutHandlers[event] || []
+            stdoutHandlers[event].push(cb)
+          }),
+        },
+        stderr: {
+          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+            stderrHandlers[event] = stderrHandlers[event] || []
+            stderrHandlers[event].push(cb)
+          }),
+        },
+        on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+          handlers[event] = handlers[event] || []
+          handlers[event].push(cb)
+        }),
+        emit(event: string, ...args: unknown[]) {
+          for (const cb of handlers[event] || []) cb(...args)
+        },
+        emitStdout(event: string, ...args: unknown[]) {
+          for (const cb of stdoutHandlers[event] || []) cb(...args)
+        },
+      }
+    }
+
+    it('should merge auto-add dirs with server addDirs when projectDir is set', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const serverConfig: AgentServerConfig = {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: true,
+        externalAgentEnabled: true,
+        chatMode: 'agent',
+        claudeCodeConfig: {
+          addDirs: ['/server/dir'],
+        },
+      }
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-auto-add', mockClient, serverConfig, 'claude_code', 'agent-1',
+        '/tmp/project',
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      // Should include both auto-add dirs and server dirs
+      expect(args).toContain('--add-dir')
+      // auto-add dirs: /mock/repos, /mock/docs, server dir: /server/dir
+      const addDirIndices = args.reduce<number[]>((acc, arg, i) => {
+        if (arg === '--add-dir') acc.push(i)
+        return acc
+      }, [])
+      expect(addDirIndices.length).toBe(3) // repos, docs, server/dir
     })
   })
 })

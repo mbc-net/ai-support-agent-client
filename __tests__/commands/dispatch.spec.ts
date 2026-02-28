@@ -55,6 +55,52 @@ describe('commands/dispatch', () => {
         expect(result.error).toBe('chat command requires commandId and client')
       }
     })
+
+    it('should dispatch setup command with onSetup callback', async () => {
+      const onSetup = jest.fn().mockResolvedValue(undefined)
+      const result = await executeCommand('setup', {}, { onSetup })
+      expect(result.success).toBe(true)
+      expect(onSetup).toHaveBeenCalled()
+    })
+
+    it('should return error for setup command without onSetup callback', async () => {
+      const result = await executeCommand('setup', {})
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error).toBe('setup command requires onSetup callback')
+      }
+    })
+
+    it('should dispatch config_sync command with onConfigSync callback', async () => {
+      const onConfigSync = jest.fn().mockResolvedValue(undefined)
+      const result = await executeCommand('config_sync', {}, { onConfigSync })
+      expect(result.success).toBe(true)
+      expect(onConfigSync).toHaveBeenCalled()
+    })
+
+    it('should return error for config_sync command without onConfigSync callback', async () => {
+      const result = await executeCommand('config_sync', {})
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error).toBe('config_sync command requires onConfigSync callback')
+      }
+    })
+
+    it('should dispatch setup via CommandDispatch', async () => {
+      const onSetup = jest.fn().mockResolvedValue(undefined)
+      const dispatch: CommandDispatch = { type: 'setup', payload: {} as Record<string, never> }
+      const result = await executeCommand(dispatch, { onSetup })
+      expect(result.success).toBe(true)
+      expect(onSetup).toHaveBeenCalled()
+    })
+
+    it('should dispatch config_sync via CommandDispatch', async () => {
+      const onConfigSync = jest.fn().mockResolvedValue(undefined)
+      const dispatch: CommandDispatch = { type: 'config_sync', payload: {} as Record<string, never> }
+      const result = await executeCommand(dispatch, { onConfigSync })
+      expect(result.success).toBe(true)
+      expect(onConfigSync).toHaveBeenCalled()
+    })
   })
 
   describe('re-exports', () => {
