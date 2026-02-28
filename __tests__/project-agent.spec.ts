@@ -761,6 +761,124 @@ describe('ProjectAgent', () => {
     })
   })
 
+  describe('performSetup', () => {
+    it('should call performConfigSync and log completion', async () => {
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      await agent.performSetup()
+
+      // performConfigSync is called once during registration and once during setup
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(2)
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Starting setup'))
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Setup completed'))
+
+      agent.stop()
+    })
+
+    it('should log documentation sources when present in project config', async () => {
+      const mockConfig = {
+        configHash: 'setup-hash',
+        project: { projectCode: 'test-proj', projectName: 'Test' },
+        agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+        documentation: {
+          sources: [
+            { url: 'https://example.com/docs', type: 'url' as const },
+          ],
+        },
+      }
+      mockedSyncProjectConfig.mockResolvedValue(mockConfig)
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+
+      await agent.performSetup()
+
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Documentation sources found'))
+
+      agent.stop()
+    })
+  })
+
+  describe('onSetup and onConfigSync callbacks', () => {
+    it('should pass onSetup callback that calls performSetup', async () => {
+      mockedExecuteCommand.mockImplementation(async (_type, _payload, opts) => {
+        if (opts?.onSetup) {
+          await opts.onSetup()
+        }
+        return { success: true, data: 'ok' }
+      })
+
+      mockClient.getPendingCommands.mockResolvedValue([
+        { commandId: 'cmd-setup', type: 'setup' },
+      ])
+      mockClient.getCommand.mockResolvedValue({
+        commandId: 'cmd-setup',
+        type: 'setup',
+        payload: {},
+      })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+      await jest.advanceTimersByTimeAsync(options.pollInterval)
+
+      expect(mockedExecuteCommand).toHaveBeenCalledWith(
+        'setup',
+        {},
+        expect.objectContaining({
+          onSetup: expect.any(Function),
+          onConfigSync: expect.any(Function),
+        }),
+      )
+      // performSetup calls performConfigSync internally
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Starting setup'))
+
+      agent.stop()
+    })
+
+    it('should pass onConfigSync callback that calls performConfigSync', async () => {
+      mockedExecuteCommand.mockImplementation(async (_type, _payload, opts) => {
+        if (opts?.onConfigSync) {
+          await opts.onConfigSync()
+        }
+        return { success: true, data: 'ok' }
+      })
+
+      mockClient.getPendingCommands.mockResolvedValue([
+        { commandId: 'cmd-sync', type: 'config_sync' },
+      ])
+      mockClient.getCommand.mockResolvedValue({
+        commandId: 'cmd-sync',
+        type: 'config_sync',
+        payload: {},
+      })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      await jest.advanceTimersByTimeAsync(100)
+      await jest.advanceTimersByTimeAsync(options.pollInterval)
+
+      expect(mockedExecuteCommand).toHaveBeenCalledWith(
+        'config_sync',
+        {},
+        expect.objectContaining({
+          onConfigSync: expect.any(Function),
+        }),
+      )
+      // performConfigSync is called: initial + callback
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(2)
+
+      agent.stop()
+    })
+  })
+
   describe('project directory', () => {
     it('should initialize project directory when projectDir is set', () => {
       const projectWithDir = { projectCode: 'test-proj', token: 'tok', apiUrl: 'http://api', projectDir: '/tmp/proj' }

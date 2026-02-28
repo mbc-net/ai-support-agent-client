@@ -48,6 +48,8 @@ export type AgentCommandType =
   | 'process_list'
   | 'process_kill'
   | 'chat'
+  | 'setup'
+  | 'config_sync'
 
 export type AgentCommandStatus =
   | 'PENDING'
@@ -200,6 +202,7 @@ export interface ProjectConfigResponse {
       id: string
       name: string
       description?: string
+      profileName?: string
       region: string
       accountId: string
       auth: { method: 'access_key' } | { method: 'sso'; startUrl: string; ssoRegion: string; permissionSetName: string }
@@ -252,3 +255,5 @@ export type CommandDispatch =
   | { type: 'process_list'; payload: Record<string, never> }
   | { type: 'process_kill'; payload: ProcessKillPayload }
   | { type: 'chat'; payload: ChatPayload }
+  | { type: 'setup'; payload: Record<string, never> }
+  | { type: 'config_sync'; payload: Record<string, never> }

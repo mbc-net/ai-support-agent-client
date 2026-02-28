@@ -237,7 +237,7 @@ export class ProjectAgent {
     }, CONFIG_SYNC_DEBOUNCE_MS)
   }
 
-  private async performConfigSync(): Promise<void> {
+  async performConfigSync(): Promise<void> {
     const config = await syncProjectConfig(
       this.client,
       this.currentConfigHash,
@@ -247,6 +247,21 @@ export class ProjectAgent {
     if (config) {
       this.applyProjectConfig(config)
     }
+  }
+
+  async performSetup(): Promise<void> {
+    logger.info(`${this.prefix} Starting setup...`)
+
+    // 1. Config sync
+    await this.performConfigSync()
+
+    // 2. Download documentation (future: repos clone)
+    if (this.projectConfig?.documentation?.sources) {
+      logger.info(`${this.prefix} Documentation sources found: ${this.projectConfig.documentation.sources.length}`)
+      // Documentation download will be implemented in a future phase
+    }
+
+    logger.info(`${this.prefix} Setup completed`)
   }
 
   private applyProjectConfig(config: ProjectConfigResponse): void {
@@ -291,6 +306,8 @@ export class ProjectAgent {
         agentId: this.agentId,
         projectDir: this.projectDir,
         projectConfig: this.projectConfig,
+        onSetup: () => this.performSetup(),
+        onConfigSync: () => this.performConfigSync(),
       })
       logger.debug(`${this.prefix} Command result [${commandId}]: success=${result.success}, data=${JSON.stringify(result.success ? result.data : result.error).substring(0, LOG_RESULT_LIMIT)}`)
       await this.client.submitResult(commandId, result, this.agentId)

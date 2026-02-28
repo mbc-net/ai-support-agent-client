@@ -28,12 +28,24 @@ describe('aws-profile', () => {
   })
 
   describe('getProfileName', () => {
-    it('should return projectCode-accountName format', () => {
+    it('should return projectCode-accountName format with string', () => {
       expect(getProfileName('MBC_01', 'dev')).toBe('MBC_01-dev')
     })
 
     it('should handle special characters in names', () => {
       expect(getProfileName('PROJ_A', 'staging-us')).toBe('PROJ_A-staging-us')
+    })
+
+    it('should use profileName when provided in account object', () => {
+      expect(getProfileName('MBC_01', { name: 'Production', profileName: 'prod' })).toBe('MBC_01-prod')
+    })
+
+    it('should fall back to name when profileName is not provided', () => {
+      expect(getProfileName('MBC_01', { name: 'dev-account' })).toBe('MBC_01-dev-account')
+    })
+
+    it('should fall back to name when profileName is empty', () => {
+      expect(getProfileName('MBC_01', { name: 'staging', profileName: '' })).toBe('MBC_01-staging')
     })
   })
 
@@ -121,6 +133,25 @@ describe('aws-profile', () => {
       expect(result).toContain('[profile MBC_01-prod]')
       expect(result).toContain('region = ap-northeast-1')
       expect(result).toContain('region = us-west-2')
+    })
+
+    it('should use profileName for profile section when available', () => {
+      const accounts: AwsAccount[] = [
+        {
+          id: 'acc-1',
+          name: 'Production Account',
+          profileName: 'prod',
+          region: 'ap-northeast-1',
+          accountId: '123456789012',
+          auth: { method: 'access_key' },
+          isDefault: true,
+        },
+      ]
+
+      const result = generateAwsConfig('MBC_01', accounts)
+
+      expect(result).toContain('[profile MBC_01-prod]')
+      expect(result).not.toContain('[profile MBC_01-Production Account]')
     })
 
     it('should include comment headers', () => {

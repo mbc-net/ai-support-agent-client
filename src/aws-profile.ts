@@ -8,11 +8,13 @@ import type { AwsCredentials, ProjectConfigResponse } from './types'
 type AwsAccount = NonNullable<ProjectConfigResponse['aws']>['accounts'][number]
 
 /**
- * Generate profile name from project code and account name.
- * Format: {projectCode}-{accountName}
+ * Generate profile name from project code and account.
+ * Uses profileName if available, otherwise falls back to name.
+ * Format: {projectCode}-{profileName|name}
  */
-export function getProfileName(projectCode: string, accountName: string): string {
-  return `${projectCode}-${accountName}`
+export function getProfileName(projectCode: string, account: string | { name: string; profileName?: string }): string {
+  const suffix = typeof account === 'string' ? account : (account.profileName || account.name)
+  return `${projectCode}-${suffix}`
 }
 
 /**
@@ -27,7 +29,7 @@ export function generateAwsConfig(projectCode: string, accounts: AwsAccount[]): 
   ]
 
   for (const account of accounts) {
-    const profileName = getProfileName(projectCode, account.name)
+    const profileName = getProfileName(projectCode, account)
     lines.push(`[profile ${profileName}]`)
     lines.push(`region = ${account.region}`)
 
