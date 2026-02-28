@@ -4,7 +4,7 @@ import os from 'os'
 import { ApiClient } from '../api-client'
 import { CHAT_SIGKILL_DELAY, CHAT_TIMEOUT, ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED, LOG_DEBUG_LIMIT, LOG_MESSAGE_LIMIT } from '../constants'
 import { logger } from '../logger'
-import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
+import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, CommandResult, ProjectConfigResponse } from '../types'
 import { getErrorMessage, parseString, truncateString } from '../utils'
 
 import { executeApiChatCommand } from './api-chat-executor'
@@ -35,6 +35,8 @@ export async function executeChatCommand(
   serverConfig?: AgentServerConfig,
   activeChatMode?: AgentChatMode,
   agentId?: string,
+  projectDir?: string,
+  projectConfig?: ProjectConfigResponse,
 ): Promise<CommandResult> {
   if (!agentId) {
     return { success: false, error: ERR_AGENT_ID_REQUIRED }
@@ -47,7 +49,7 @@ export async function executeChatCommand(
       return executeApiChatCommand(payload, commandId, client, serverConfig, agentId)
     case 'claude_code':
     default:
-      return executeClaudeCodeChat(payload, commandId, client, agentId, serverConfig)
+      return executeClaudeCodeChat(payload, commandId, client, agentId, serverConfig, projectDir, projectConfig)
   }
 }
 
@@ -62,6 +64,8 @@ async function executeClaudeCodeChat(
   client: ApiClient,
   agentId: string,
   serverConfig?: AgentServerConfig,
+  projectDir?: string,
+  projectConfig?: ProjectConfigResponse,
 ): Promise<CommandResult> {
   const message = parseString(payload.message)
   if (!message) {
@@ -74,25 +78,40 @@ async function executeClaudeCodeChat(
 
   try {
     const allowedTools = serverConfig?.claudeCodeConfig?.allowedTools
-    const addDirs = serverConfig?.claudeCodeConfig?.addDirs
+    const serverAddDirs = serverConfig?.claudeCodeConfig?.addDirs ?? []
+    // Merge project directory auto-add dirs with server-configured dirs
+    let addDirs: string[] | undefined
+    if (projectDir) {
+      const { getAutoAddDirs } = await import('../project-dir')
+      const autoAddDirs = getAutoAddDirs(projectDir)
+      addDirs = [...autoAddDirs, ...serverAddDirs]
+    } else {
+      addDirs = serverAddDirs.length > 0 ? serverAddDirs : undefined
+    }
     const locale = parseString(payload.locale) ?? undefined
 
-    // AWS認証情報をJust-In-Timeで取得
-    const awsAccountId = parseString(payload.awsAccountId) ?? undefined
+    // AWS認証情報を取得（プロファイル方式 or 環境変数直接注入）
     let awsEnv: Record<string, string> | undefined
-    if (awsAccountId) {
-      try {
-        logger.info(`[chat] Fetching AWS credentials for account: ${awsAccountId}`)
-        const creds = await client.getAwsCredentials(awsAccountId)
-        awsEnv = {
-          AWS_ACCESS_KEY_ID: creds.accessKeyId,
-          AWS_SECRET_ACCESS_KEY: creds.secretAccessKey,
-          AWS_DEFAULT_REGION: creds.region,
-          ...(creds.sessionToken ? { AWS_SESSION_TOKEN: creds.sessionToken } : {}),
+    if (projectDir && projectConfig?.aws?.accounts?.length) {
+      // プロファイル方式: 全アカウントの認証情報を取得してプロファイルファイルに書き込み
+      awsEnv = await buildAwsProfileCredentials(client, projectDir, projectConfig)
+    } else {
+      // フォールバック: 単一アカウントの環境変数直接注入（従来方式）
+      const awsAccountId = parseString(payload.awsAccountId) ?? undefined
+      if (awsAccountId) {
+        try {
+          logger.info(`[chat] Fetching AWS credentials for account: ${awsAccountId}`)
+          const creds = await client.getAwsCredentials(awsAccountId)
+          awsEnv = {
+            AWS_ACCESS_KEY_ID: creds.accessKeyId,
+            AWS_SECRET_ACCESS_KEY: creds.secretAccessKey,
+            AWS_DEFAULT_REGION: creds.region,
+            ...(creds.sessionToken ? { AWS_SESSION_TOKEN: creds.sessionToken } : {}),
+          }
+          logger.info(`[chat] AWS credentials obtained for region=${creds.region}`)
+        } catch (error) {
+          logger.warn(`[chat] Failed to get AWS credentials: ${getErrorMessage(error)}`)
         }
-        logger.info(`[chat] AWS credentials obtained for region=${creds.region}`)
-      } catch (error) {
-        logger.warn(`[chat] Failed to get AWS credentials: ${getErrorMessage(error)}`)
       }
     }
 
@@ -253,4 +272,47 @@ async function runClaudeCode(
       }
     })
   })
+}
+
+/**
+ * プロファイル方式でAWS認証情報を構築する。
+ * 全アカウントの認証情報をサーバーから取得し、プロファイルファイルに書き込んで
+ * 環境変数（AWS_CONFIG_FILE, AWS_SHARED_CREDENTIALS_FILE 等）を返す。
+ */
+async function buildAwsProfileCredentials(
+  client: ApiClient,
+  projectDir: string,
+  projectConfig: ProjectConfigResponse,
+): Promise<Record<string, string> | undefined> {
+  const accounts = projectConfig.aws?.accounts
+  if (!accounts?.length) return undefined
+
+  const projectCode = projectConfig.project.projectCode
+  const { writeAwsCredentials, buildAwsProfileEnv } = await import('../aws-profile')
+  const credentialMap = new Map<string, import('../types').AwsCredentials>()
+
+  for (const account of accounts) {
+    try {
+      logger.info(`[chat] Fetching AWS credentials for profile: ${account.name} (${account.accountId})`)
+      const creds = await client.getAwsCredentials(account.accountId)
+      credentialMap.set(account.name, creds)
+    } catch (error) {
+      logger.warn(`[chat] Failed to get AWS credentials for ${account.name}: ${getErrorMessage(error)}`)
+    }
+  }
+
+  if (credentialMap.size === 0) return undefined
+
+  // credentials ファイルに書き込み
+  writeAwsCredentials(projectDir, projectCode, credentialMap)
+
+  // デフォルトアカウントを特定
+  const defaultAccount = accounts.find((a) => a.isDefault) ?? accounts[0]
+
+  return buildAwsProfileEnv(
+    projectDir,
+    projectCode,
+    defaultAccount.name,
+    defaultAccount.region,
+  )
 }

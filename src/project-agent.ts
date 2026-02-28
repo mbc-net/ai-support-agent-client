@@ -4,11 +4,14 @@ import { ApiClient } from './api-client'
 import { AppSyncSubscriber, type AppSyncNotification } from './appsync-subscriber'
 import { detectAvailableChatModes, resolveActiveChatMode } from './chat-mode-detector'
 import { executeCommand } from './commands'
+import { CONFIG_SYNC_DEBOUNCE_MS, LOG_PAYLOAD_LIMIT, LOG_RESULT_LIMIT } from './constants'
 import { t } from './i18n'
 import { logger } from './logger'
+import { writeAwsConfig } from './aws-profile'
+import { syncProjectConfig } from './project-config-sync'
+import { initProjectDir } from './project-dir'
 import { getSystemInfo, getLocalIpAddress } from './system-info'
-import type { AgentChatMode, AgentServerConfig, ProjectRegistration, RegisterResponse } from './types'
-import { LOG_PAYLOAD_LIMIT, LOG_RESULT_LIMIT } from './constants'
+import type { AgentChatMode, AgentServerConfig, ProjectConfigResponse, ProjectRegistration, RegisterResponse } from './types'
 import { getErrorMessage } from './utils'
 
 export interface ProjectAgentOptions {
@@ -28,6 +31,10 @@ export class ProjectAgent {
   private availableChatModes: AgentChatMode[] = []
   private activeChatMode: AgentChatMode | undefined = undefined
   private readonly localAgentChatMode: AgentChatMode | undefined
+  private readonly projectDir: string | undefined
+  private currentConfigHash: string | undefined = undefined
+  private configSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private projectConfig: ProjectConfigResponse | undefined = undefined
 
   constructor(
     project: ProjectRegistration,
@@ -35,11 +42,16 @@ export class ProjectAgent {
     private readonly options: ProjectAgentOptions,
     tenantCode?: string,
     localAgentChatMode?: AgentChatMode,
+    defaultProjectDir?: string,
   ) {
     this.client = new ApiClient(project.apiUrl, project.token)
     this.prefix = `[${project.projectCode}]`
     this.tenantCode = tenantCode ?? project.projectCode
     this.localAgentChatMode = localAgentChatMode
+    // Resolve project directory if configured
+    if (project.projectDir || defaultProjectDir) {
+      this.projectDir = initProjectDir(project, defaultProjectDir)
+    }
   }
 
   start(): void {
@@ -51,6 +63,7 @@ export class ProjectAgent {
   stop(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
     if (this.pollTimer) clearInterval(this.pollTimer)
+    if (this.configSyncDebounceTimer) clearTimeout(this.configSyncDebounceTimer)
     if (this.subscriber) this.subscriber.disconnect()
   }
 
@@ -79,6 +92,9 @@ export class ProjectAgent {
       logger.error(t('runner.registerFailed', { prefix: this.prefix, message: getErrorMessage(error) }))
       return
     }
+
+    // Perform initial config sync
+    await this.performConfigSync()
 
     if (result.transportMode === 'realtime' && result.appsyncUrl && result.appsyncApiKey) {
       logger.info(`${this.prefix} Starting subscription mode (realtime)`)
@@ -146,7 +162,7 @@ export class ProjectAgent {
       try {
         await this.refreshChatMode(false)
 
-        await this.client.heartbeat(
+        const response = await this.client.heartbeat(
           this.agentId,
           getSystemInfo(),
           undefined,
@@ -154,6 +170,16 @@ export class ProjectAgent {
           this.activeChatMode,
           getLocalIpAddress(),
         )
+
+        // Check configHash from heartbeat response (polling fallback)
+        if (response && typeof response === 'object' && 'configHash' in response) {
+          const heartbeatResponse = response as { configHash?: string }
+          if (heartbeatResponse.configHash && heartbeatResponse.configHash !== this.currentConfigHash) {
+            logger.info(`${this.prefix} Config hash changed in heartbeat response, syncing...`)
+            this.scheduleConfigSync()
+          }
+        }
+
         logger.debug(`${this.prefix} Heartbeat sent (activeChatMode=${this.activeChatMode ?? 'none'})`)
       } catch (error) {
         logger.warn(t('runner.heartbeatFailed', { prefix: this.prefix, message: getErrorMessage(error) }))
@@ -170,24 +196,102 @@ export class ProjectAgent {
   private async handleNotification(notification: AppSyncNotification): Promise<void> {
     logger.debug(`${this.prefix} Notification received: action=${notification.action}, content=${JSON.stringify(notification.content ?? {}).substring(0, LOG_RESULT_LIMIT)}`)
 
-    if (notification.action !== 'agent-command') {
-      logger.debug(`${this.prefix} Ignoring notification with action: ${notification.action}`)
-      return
+    switch (notification.action) {
+      case 'agent-command': {
+        const commandId = notification.content?.commandId as string
+        if (!commandId) {
+          logger.warn(`${this.prefix} Notification missing commandId: ${JSON.stringify(notification.content ?? {})}`)
+          return
+        }
+        logger.info(t('runner.commandReceived', {
+          prefix: this.prefix,
+          type: (notification.content?.type as string) ?? 'unknown',
+          commandId,
+        }))
+        await this.processCommand(commandId)
+        break
+      }
+      case 'config-update': {
+        await this.handleConfigUpdate(notification)
+        break
+      }
+      default:
+        logger.debug(`${this.prefix} Ignoring notification with action: ${notification.action}`)
+    }
+  }
+
+  private async handleConfigUpdate(notification: AppSyncNotification): Promise<void> {
+    const newHash = notification.content?.configHash as string
+    if (newHash && newHash !== this.currentConfigHash) {
+      logger.info(`${this.prefix} Config update detected (hash: ${newHash})`)
+      this.scheduleConfigSync()
+    }
+  }
+
+  private scheduleConfigSync(): void {
+    if (this.configSyncDebounceTimer) {
+      clearTimeout(this.configSyncDebounceTimer)
+    }
+    this.configSyncDebounceTimer = setTimeout(() => {
+      void this.performConfigSync()
+    }, CONFIG_SYNC_DEBOUNCE_MS)
+  }
+
+  async performConfigSync(): Promise<void> {
+    const config = await syncProjectConfig(
+      this.client,
+      this.currentConfigHash,
+      this.projectDir,
+      this.prefix,
+    )
+    if (config) {
+      this.applyProjectConfig(config)
+    }
+  }
+
+  async performSetup(): Promise<void> {
+    logger.info(`${this.prefix} Starting setup...`)
+
+    // 1. Config sync
+    await this.performConfigSync()
+
+    // 2. Download documentation (future: repos clone)
+    if (this.projectConfig?.documentation?.sources) {
+      logger.info(`${this.prefix} Documentation sources found: ${this.projectConfig.documentation.sources.length}`)
+      // Documentation download will be implemented in a future phase
     }
 
-    const commandId = notification.content?.commandId as string
-    if (!commandId) {
-      logger.warn(`${this.prefix} Notification missing commandId: ${JSON.stringify(notification.content ?? {})}`)
-      return
+    logger.info(`${this.prefix} Setup completed`)
+  }
+
+  private applyProjectConfig(config: ProjectConfigResponse): void {
+    this.currentConfigHash = config.configHash
+    this.projectConfig = config
+
+    // Update serverConfig from project config
+    this.serverConfig = {
+      agentEnabled: config.agent.agentEnabled,
+      builtinAgentEnabled: config.agent.builtinAgentEnabled,
+      builtinFallbackEnabled: config.agent.builtinFallbackEnabled,
+      externalAgentEnabled: config.agent.externalAgentEnabled,
+      chatMode: 'agent',
+      claudeCodeConfig: {
+        allowedTools: config.agent.allowedTools,
+        addDirs: config.agent.claudeCodeConfig?.additionalDirs,
+        systemPrompt: config.agent.claudeCodeConfig?.appendSystemPrompt,
+      },
     }
 
-    logger.info(t('runner.commandReceived', {
-      prefix: this.prefix,
-      type: (notification.content?.type as string) ?? 'unknown',
-      commandId,
-    }))
+    // Write AWS config file if project directory and AWS accounts are configured
+    if (this.projectDir && config.aws?.accounts?.length) {
+      try {
+        writeAwsConfig(this.projectDir, config.project.projectCode, config.aws.accounts)
+      } catch (error) {
+        logger.warn(`${this.prefix} Failed to write AWS config: ${getErrorMessage(error)}`)
+      }
+    }
 
-    await this.processCommand(commandId)
+    logger.info(`${this.prefix} Config applied (hash: ${config.configHash})`)
   }
 
   private async processCommand(commandId: string): Promise<void> {
@@ -200,6 +304,10 @@ export class ProjectAgent {
         serverConfig: this.serverConfig ?? undefined,
         activeChatMode: this.activeChatMode,
         agentId: this.agentId,
+        projectDir: this.projectDir,
+        projectConfig: this.projectConfig,
+        onSetup: () => this.performSetup(),
+        onConfigSync: () => this.performConfigSync(),
       })
       logger.debug(`${this.prefix} Command result [${commandId}]: success=${result.success}, data=${JSON.stringify(result.success ? result.data : result.error).substring(0, LOG_RESULT_LIMIT)}`)
       await this.client.submitResult(commandId, result, this.agentId)

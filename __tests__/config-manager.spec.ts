@@ -27,7 +27,7 @@ jest.mock('os', () => {
 
 jest.mock('../src/logger')
 
-import { loadConfig, saveConfig, clearConfig, getOrCreateAgentId, getProjectList, addProject, removeProject } from '../src/config-manager'
+import { loadConfig, saveConfig, clearConfig, getOrCreateAgentId, getProjectList, addProject, removeProject, setProjectDir, setDefaultProjectDir } from '../src/config-manager'
 
 describe('config-manager', () => {
   afterEach(() => {
@@ -255,6 +255,83 @@ describe('config-manager', () => {
 
       const removed = removeProject('anything')
       expect(removed).toBe(false)
+    })
+  })
+
+  describe('setProjectDir', () => {
+    it('should return true and set projectDir when project exists', () => {
+      saveConfig({})
+      addProject({ projectCode: 'proj-a', token: 'token-a', apiUrl: 'http://api-a' })
+
+      const result = setProjectDir('proj-a', '/home/user/projects/proj-a')
+      expect(result).toBe(true)
+
+      const config = loadConfig()
+      expect(config?.projects?.[0].projectDir).toBe('/home/user/projects/proj-a')
+    })
+
+    it('should return false when project does not exist', () => {
+      saveConfig({})
+      addProject({ projectCode: 'proj-a', token: 'token-a', apiUrl: 'http://api-a' })
+
+      const result = setProjectDir('nonexistent', '/some/path')
+      expect(result).toBe(false)
+
+      // Existing project should remain unchanged
+      const config = loadConfig()
+      expect(config?.projects?.[0].projectDir).toBeUndefined()
+    })
+
+    it('should only update the targeted project when multiple projects exist', () => {
+      saveConfig({})
+      addProject({ projectCode: 'proj-a', token: 'token-a', apiUrl: 'http://api-a' })
+      addProject({ projectCode: 'proj-b', token: 'token-b', apiUrl: 'http://api-b' })
+
+      const result = setProjectDir('proj-b', '/home/user/projects/proj-b')
+      expect(result).toBe(true)
+
+      const config = loadConfig()
+      const projA = config?.projects?.find((p) => p.projectCode === 'proj-a')
+      const projB = config?.projects?.find((p) => p.projectCode === 'proj-b')
+      expect(projA?.projectDir).toBeUndefined()
+      expect(projB?.projectDir).toBe('/home/user/projects/proj-b')
+    })
+  })
+
+  describe('setDefaultProjectDir', () => {
+    it('should set defaultProjectDir in config', () => {
+      saveConfig({})
+
+      setDefaultProjectDir('/home/user/projects/{projectCode}')
+
+      const config = loadConfig()
+      expect(config?.defaultProjectDir).toBe('/home/user/projects/{projectCode}')
+    })
+
+    it('should overwrite existing defaultProjectDir', () => {
+      saveConfig({ defaultProjectDir: '/old/path/{projectCode}' })
+
+      setDefaultProjectDir('/new/path/{projectCode}')
+
+      const config = loadConfig()
+      expect(config?.defaultProjectDir).toBe('/new/path/{projectCode}')
+    })
+  })
+
+  describe('saveConfig defaultProjectDir merge', () => {
+    it('should merge defaultProjectDir when provided', () => {
+      saveConfig({
+        projects: [{ projectCode: 'proj-a', token: 'token-a', apiUrl: 'http://api-a' }],
+      })
+
+      saveConfig({ defaultProjectDir: '/home/user/projects/{projectCode}' })
+
+      const config = loadConfig()
+      // defaultProjectDir should be set
+      expect(config?.defaultProjectDir).toBe('/home/user/projects/{projectCode}')
+      // existing projects should be preserved
+      expect(config?.projects).toHaveLength(1)
+      expect(config?.projects?.[0].projectCode).toBe('proj-a')
     })
   })
 })

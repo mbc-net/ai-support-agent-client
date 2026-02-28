@@ -92,5 +92,17 @@
   "update.forced": "強制更新が必要です: 現在のバージョンが最低バージョン ({{minimumVersion}}) を下回っています。{{version}} に更新します...",
   "update.disabled": "無効",
   "update.enabled": "有効 (自動再起動: {{autoRestart}})",
-  "update.checkFailed": "バージョンチェックに失敗しました: {{message}}"
+  "update.checkFailed": "バージョンチェックに失敗しました: {{message}}",
+
+  "cmd.setProjectDir": "プロジェクトディレクトリを設定",
+  "cmd.setProjectDir.project": "プロジェクトコード",
+  "cmd.setProjectDir.path": "ディレクトリパス",
+  "cmd.setProjectDir.default": "デフォルトディレクトリテンプレート（{projectCode} プレースホルダーを使用）",
+  "projectDir.created": "プロジェクトディレクトリを作成しました: {{projectDir}}",
+  "projectDir.set": "プロジェクト \"{{projectCode}}\" のディレクトリを {{projectDir}} に設定しました",
+  "projectDir.defaultSet": "デフォルトプロジェクトディレクトリテンプレートを \"{{template}}\" に設定しました",
+  "projectDir.noProject": "プロジェクト \"{{projectCode}}\" は登録されていません。",
+  "projectDir.initialized": "プロジェクトディレクトリを初期化しました: {{projectDir}} ({{projectCode}})",
+  "projectDir.usageHint": "使い方: set-project-dir --project <code> --path <path> または --default <template>",
+  "projectDir.cleaned": "メタデータディレクトリを削除しました: {{metadataDir}}"
 }
