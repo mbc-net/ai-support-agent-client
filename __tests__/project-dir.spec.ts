@@ -104,7 +104,7 @@ describe('project-dir', () => {
     it('should use default template when neither projectDir nor defaultProjectDir is set', () => {
       const project = { projectCode: 'MBC_01', token: 'tok', apiUrl: 'http://api' }
       expect(resolveProjectDir(project)).toBe(
-        '/home/testuser/ai-support-agent/projects/MBC_01',
+        '/home/testuser/.ai-support-agent/projects/MBC_01',
       )
     })
 
@@ -245,7 +245,7 @@ describe('project-dir', () => {
       const project = { projectCode: 'MBC_01', token: 'tok', apiUrl: 'http://api' }
       const result = initProjectDir(project)
 
-      expect(result).toBe('/home/testuser/ai-support-agent/projects/MBC_01')
+      expect(result).toBe('/home/testuser/.ai-support-agent/projects/MBC_01')
       // Verify directories were created (mkdirSync was called)
       expect(mockedFs.mkdirSync).toHaveBeenCalled()
     })

@@ -2,6 +2,21 @@ import axios from 'axios'
 
 import { logger } from './logger'
 
+export interface BackoffOptions {
+  baseDelayMs: number
+  attempt: number
+  jitter?: boolean
+}
+
+export function calculateBackoff(options: BackoffOptions): number {
+  const { baseDelayMs, attempt, jitter = true } = options
+  const baseDelay = baseDelayMs * Math.pow(2, attempt)
+  if (!jitter) {
+    return baseDelay
+  }
+  return Math.round(baseDelay * (0.5 + Math.random() * 0.5))
+}
+
 export interface RetryOptions {
   maxRetries: number
   baseDelayMs: number
@@ -36,8 +51,7 @@ export class RetryStrategy {
           throw error
         }
         if (attempt < maxRetries - 1) {
-          const baseDelay = baseDelayMs * Math.pow(2, attempt)
-          const delay = Math.round(baseDelay * (0.5 + Math.random() * 0.5))
+          const delay = calculateBackoff({ baseDelayMs, attempt })
           logger.debug(`Request failed (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms`)
           await new Promise((resolve) => setTimeout(resolve, delay))
         }

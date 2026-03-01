@@ -6,7 +6,7 @@ import { logger } from './logger'
 import { t } from './i18n'
 import type { ProjectRegistration } from './types'
 
-const DEFAULT_PROJECT_DIR_TEMPLATE = '~/ai-support-agent/projects/{projectCode}'
+const DEFAULT_PROJECT_DIR_TEMPLATE = '~/.ai-support-agent/projects/{projectCode}'
 
 const PROJECT_SUBDIRS = ['repos', 'docs', 'artifacts', 'uploads'] as const
 const METADATA_DIR = '.ai-support-agent'

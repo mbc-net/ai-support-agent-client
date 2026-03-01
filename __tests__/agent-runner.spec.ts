@@ -25,6 +25,9 @@ jest.mock('../src/chat-mode-detector', () => ({
 jest.mock('../src/appsync-subscriber', () => ({
   AppSyncSubscriber: jest.fn(),
 }))
+jest.mock('../src/project-dir', () => ({
+  initProjectDir: jest.fn().mockReturnValue('/tmp/test-project'),
+}))
 jest.mock('os', () => {
   const actual = jest.requireActual<typeof os>('os')
   return {
