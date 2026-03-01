@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 
 import type { ApiClient } from '../../src/api-client'
 import { executeApiChatCommand } from '../../src/commands/api-chat-executor'
+import { ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED } from '../../src/constants'
 import type { AgentServerConfig, ChatPayload } from '../../src/types'
 
 jest.mock('../../src/logger')
@@ -54,7 +55,7 @@ describe('api-chat-executor', () => {
     const result = await executeApiChatCommand(basePayload, 'cmd-0', mockClient)
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toBe('agentId is required for chat command')
+      expect(result.error).toBe(ERR_AGENT_ID_REQUIRED)
     }
   })
 
@@ -68,7 +69,7 @@ describe('api-chat-executor', () => {
     )
     expect(result.success).toBe(false)
     if (!result.success) {
-      expect(result.error).toBe('message is required')
+      expect(result.error).toBe(ERR_MESSAGE_REQUIRED)
     }
   })
 
@@ -160,12 +161,18 @@ describe('api-chat-executor', () => {
       type: 'delta',
       content: ' there',
     }, 'agent-1')
-    // done chunk
-    expect(mockClient.submitChatChunk).toHaveBeenCalledWith('cmd-3', {
-      index: 2,
-      type: 'done',
-      content: 'Hello there',
-    }, 'agent-1')
+    // done chunk (now includes usage JSON)
+    const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+      (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+    )
+    expect(doneCall).toBeTruthy()
+    const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+    expect(doneContent.text).toBe('Hello there')
+    expect(doneContent.usage).toEqual({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+    })
   })
 
   it('should use default maxTokens when config is not provided', async () => {
@@ -343,6 +350,179 @@ describe('api-chat-executor', () => {
     expect(mockClient.submitChatChunk).toHaveBeenCalledWith('cmd-err-chunk', expect.objectContaining({
       type: 'error',
     }), 'agent-1')
+  })
+
+  it('should extract usage from message_start and message_delta events', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const resultPromise = executeApiChatCommand(
+      basePayload, 'cmd-usage', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // message_start with input_tokens
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":42}}}\n\n',
+    ))
+    // content
+    stream.emit('data', Buffer.from(
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+    ))
+    // message_delta with output_tokens
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_delta","usage":{"output_tokens":15}}\n\n',
+    ))
+    stream.emit('end')
+
+    const result = await resultPromise
+    expect(result.success).toBe(true)
+
+    // done chunk should contain usage JSON
+    const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+      (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+    )
+    expect(doneCall).toBeTruthy()
+    const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+    expect(doneContent.text).toBe('hi')
+    expect(doneContent.usage).toEqual({
+      totalInputTokens: 42,
+      totalOutputTokens: 15,
+      totalTokens: 57,
+    })
+  })
+
+  it('should handle message_start without usage gracefully', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const resultPromise = executeApiChatCommand(
+      basePayload, 'cmd-no-usage', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // message_start without usage
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_start","message":{}}\n\n',
+    ))
+    // message_delta without usage
+    stream.emit('data', Buffer.from(
+      'data: {"type":"message_delta"}\n\n',
+    ))
+    stream.emit('end')
+
+    const result = await resultPromise
+    expect(result.success).toBe(true)
+
+    const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+      (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+    )
+    const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+    expect(doneContent.usage).toEqual({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalTokens: 0,
+    })
+  })
+
+  it('should include history messages in API call', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const payloadWithHistory: ChatPayload = {
+      message: 'Follow up question',
+      history: [
+        { role: 'user', content: 'First question' },
+        { role: 'assistant', content: 'First answer' },
+      ],
+    }
+
+    const resultPromise = executeApiChatCommand(
+      payloadWithHistory, 'cmd-history', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    stream.emit('data', Buffer.from('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"response"}}\n\n'))
+    stream.emit('end')
+
+    const result = await resultPromise
+    expect(result.success).toBe(true)
+
+    // Verify messages array includes history
+    expect(mockedAxiosPost).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        messages: [
+          { role: 'user', content: 'First question' },
+          { role: 'assistant', content: 'First answer' },
+          { role: 'user', content: 'Follow up question' },
+        ],
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('should map non-assistant roles to user in history', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const payloadWithHistory: ChatPayload = {
+      message: 'Current',
+      history: [
+        { role: 'system', content: 'System message' },
+        { role: 'assistant', content: 'Assistant reply' },
+      ],
+    }
+
+    const resultPromise = executeApiChatCommand(
+      payloadWithHistory, 'cmd-history-roles', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    stream.emit('end')
+
+    await resultPromise
+
+    expect(mockedAxiosPost).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        messages: [
+          { role: 'user', content: 'System message' },
+          { role: 'assistant', content: 'Assistant reply' },
+          { role: 'user', content: 'Current' },
+        ],
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('should handle empty history array', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const payloadWithHistory: ChatPayload = {
+      message: 'No history',
+      history: [],
+    }
+
+    const resultPromise = executeApiChatCommand(
+      payloadWithHistory, 'cmd-empty-history', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    stream.emit('end')
+
+    await resultPromise
+
+    expect(mockedAxiosPost).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        messages: [{ role: 'user', content: 'No history' }],
+      }),
+      expect.any(Object),
+    )
   })
 
   it('should handle incomplete SSE lines across chunks', async () => {

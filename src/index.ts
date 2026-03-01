@@ -5,10 +5,15 @@ import { Command } from 'commander'
 import { startAgent } from './agent-runner'
 import { registerAuthCommands } from './cli/auth-commands'
 import { registerStatusCommand } from './cli/status-command'
+import { registerSetProjectDirCommand } from './commands/set-project-dir'
+import { resolveProjectDir, getMetadataDir } from './project-dir'
 import { parseIntervalOrExit, validateUpdateChannel } from './cli/validators'
 import { AGENT_VERSION } from './constants'
 import type { ReleaseChannel } from './types'
+import * as fs from 'fs'
+
 import {
+  loadConfig,
   removeProject,
   saveConfig,
 } from './config-manager'
@@ -35,6 +40,7 @@ program
   .option('--verbose', t('cmd.start.verbose'))
   .option('--no-auto-update', t('cmd.start.noAutoUpdate'))
   .option('--update-channel <channel>', t('cmd.start.updateChannel'))
+  .option('--docker', t('cmd.start.docker'))
   .action(async (opts: {
     token?: string
     apiUrl?: string
@@ -43,7 +49,21 @@ program
     verbose?: boolean
     autoUpdate?: boolean
     updateChannel?: string
+    docker?: boolean
   }) => {
+    if (opts.docker) {
+      const { runInDocker } = await import('./docker/docker-runner')
+      runInDocker({
+        token: opts.token,
+        apiUrl: opts.apiUrl,
+        pollInterval: parseIntervalOrExit(opts.pollInterval, 'poll-interval'),
+        heartbeatInterval: parseIntervalOrExit(opts.heartbeatInterval, 'heartbeat-interval'),
+        verbose: opts.verbose,
+        autoUpdate: opts.autoUpdate,
+        updateChannel: opts.updateChannel,
+      })
+      return
+    }
     const updateChannel = validateUpdateChannel(opts.updateChannel)
     await startAgent({
       token: opts.token,
@@ -63,6 +83,25 @@ program
   .description(t('cmd.removeProject'))
   .argument('<projectCode>', t('cmd.removeProject.arg'))
   .action((projectCode: string) => {
+    // Clean up .ai-support-agent/ metadata directory if project directory exists
+    const config = loadConfig()
+    const project = config?.projects?.find((p) => p.projectCode === projectCode)
+    if (project?.projectDir || config?.defaultProjectDir) {
+      try {
+        const projectDir = resolveProjectDir(
+          { projectCode, token: '', apiUrl: '', projectDir: project?.projectDir },
+          config?.defaultProjectDir,
+        )
+        const metadataDir = getMetadataDir(projectDir)
+        if (fs.existsSync(metadataDir)) {
+          fs.rmSync(metadataDir, { recursive: true })
+          logger.info(t('projectDir.cleaned', { metadataDir }))
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+
     const removed = removeProject(projectCode)
     if (removed) {
       logger.success(t('project.removed', { projectCode }))
@@ -80,6 +119,15 @@ program
     logger.success(t('config.languageSet', { lang }))
   })
 
+program
+  .command('docker-login')
+  .description(t('cmd.dockerLogin'))
+  .action(async () => {
+    const { dockerLogin } = await import('./docker/docker-runner')
+    dockerLogin()
+  })
+
 registerStatusCommand(program)
+registerSetProjectDirCommand(program)
 
 program.parse()

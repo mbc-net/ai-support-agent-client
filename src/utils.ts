@@ -12,6 +12,11 @@ export function parseNumber(value: unknown): number | null {
   return null
 }
 
+export function truncateString(text: string, limit: number, suffix = '...'): string {
+  if (text.length <= limit) return text
+  return text.substring(0, limit) + suffix
+}
+
 export function validateApiUrl(url: string): string | null {
   try {
     const parsed = new URL(url)

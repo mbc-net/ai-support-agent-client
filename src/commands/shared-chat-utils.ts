@@ -1,7 +1,36 @@
 import { ApiClient } from '../api-client'
+import { CHUNK_LOG_LIMIT } from '../constants'
 import { logger } from '../logger'
-import type { ChatChunkType } from '../types'
-import { getErrorMessage } from '../utils'
+import type { ChatChunkType, HistoryMessage } from '../types'
+import { getErrorMessage, truncateString } from '../utils'
+
+/**
+ * 外部からのhistoryデータをパースし、有効なHistoryMessage配列を返す
+ */
+export function parseHistory(history: unknown): HistoryMessage[] {
+  if (!Array.isArray(history)) return []
+  return history.filter(
+    (item): item is HistoryMessage =>
+      typeof item === 'object' &&
+      item !== null &&
+      typeof item.role === 'string' &&
+      typeof item.content === 'string',
+  ).map(({ role, content }) => ({ role, content }))
+}
+
+/**
+ * Claude Code CLI 向けに会話履歴をメッセージに埋め込む
+ */
+export function formatHistoryForClaudeCode(
+  history: HistoryMessage[],
+  currentMessage: string,
+): string {
+  if (history.length === 0) return currentMessage
+  const historyBlock = history
+    .map((msg) => `[${msg.role}]: ${msg.content}`)
+    .join('\n\n')
+  return `<conversation_history>\n${historyBlock}\n</conversation_history>\n\n${currentMessage}`
+}
 
 export interface ChunkSenderOptions {
   debugLog?: boolean
@@ -35,7 +64,7 @@ export function createChunkSender(
   ): Promise<void> => {
     try {
       if (options?.debugLog) {
-        logger.debug(`[${logTag}] Sending chunk #${chunkIndex} (${type}) [${commandId}]: ${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`)
+        logger.debug(`[${logTag}] Sending chunk #${chunkIndex} (${type}) [${commandId}]: ${truncateString(content, CHUNK_LOG_LIMIT)}`)
       }
       await client.submitChatChunk(commandId, {
         index: chunkIndex++,

@@ -1,4 +1,4 @@
-import { getErrorMessage, parseString, parseNumber, validateApiUrl } from '../src/utils'
+import { getErrorMessage, parseString, parseNumber, truncateString, validateApiUrl } from '../src/utils'
 
 describe('getErrorMessage', () => {
   it('should return message from Error instance', () => {
@@ -64,6 +64,32 @@ describe('parseNumber', () => {
 
   it('should return negative numbers', () => {
     expect(parseNumber(-5)).toBe(-5)
+  })
+})
+
+describe('truncateString', () => {
+  it('should return text as-is when shorter than limit', () => {
+    expect(truncateString('hello', 10)).toBe('hello')
+  })
+
+  it('should return text as-is when exactly at limit', () => {
+    expect(truncateString('hello', 5)).toBe('hello')
+  })
+
+  it('should truncate and add suffix when longer than limit', () => {
+    expect(truncateString('hello world', 5)).toBe('hello...')
+  })
+
+  it('should use custom suffix', () => {
+    expect(truncateString('hello world', 5, ' [truncated]')).toBe('hello [truncated]')
+  })
+
+  it('should handle empty string', () => {
+    expect(truncateString('', 10)).toBe('')
+  })
+
+  it('should handle limit of 0', () => {
+    expect(truncateString('hello', 0)).toBe('...')
   })
 })
 

@@ -1,8 +1,30 @@
 import type { ApiClient } from '../../src/api-client'
 import { executeChatCommand } from '../../src/commands/chat-executor'
-import type { AgentServerConfig, ChatPayload } from '../../src/types'
+import { ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED } from '../../src/constants'
+import type { AgentServerConfig, ChatPayload, ProjectConfigResponse } from '../../src/types'
+import { createMockChildProcess } from '../helpers/mock-factory'
 
 jest.mock('../../src/logger')
+
+// Mock project-dir
+jest.mock('../../src/project-dir', () => ({
+  getAutoAddDirs: jest.fn().mockReturnValue(['/mock/repos', '/mock/docs']),
+}))
+
+// Mock aws-credential-builder
+jest.mock('../../src/aws-credential-builder', () => ({
+  buildAwsProfileCredentials: jest.fn().mockResolvedValue({
+    env: {
+      AWS_CONFIG_FILE: '/mock/.ai-support-agent/aws/config',
+      AWS_SHARED_CREDENTIALS_FILE: '/mock/.ai-support-agent/aws/credentials',
+      AWS_PROFILE: 'TEST-dev',
+      AWS_DEFAULT_REGION: 'ap-northeast-1',
+    },
+    errors: [],
+    ssoAuthRequired: [],
+  }),
+  buildSingleAccountAwsEnv: jest.fn().mockResolvedValue({ errors: [], ssoAuthRequired: [] }),
+}))
 
 // Mock api-chat-executor
 jest.mock('../../src/commands/api-chat-executor', () => ({
@@ -102,7 +124,7 @@ describe('chat-executor', () => {
       const result = await executeChatCommand(basePayload, 'cmd-no-agent', mockClient)
       expect(result.success).toBe(false)
       if (!result.success) {
-        expect(result.error).toBe('agentId is required for chat command')
+        expect(result.error).toBe(ERR_AGENT_ID_REQUIRED)
       }
     })
 
@@ -110,7 +132,7 @@ describe('chat-executor', () => {
       const result = await executeChatCommand(basePayload, 'cmd-empty-agent', mockClient, undefined, undefined, '')
       expect(result.success).toBe(false)
       if (!result.success) {
-        expect(result.error).toBe('agentId is required for chat command')
+        expect(result.error).toBe(ERR_AGENT_ID_REQUIRED)
       }
     })
   })
@@ -127,52 +149,15 @@ describe('chat-executor', () => {
       )
       expect(result.success).toBe(false)
       if (!result.success) {
-        expect(result.error).toBe('message is required')
+        expect(result.error).toBe(ERR_MESSAGE_REQUIRED)
       }
     })
   })
 
   describe('Claude Code CLI error handling', () => {
-    function createMockProcess() {
-      const handlers: Record<string, ((...args: unknown[]) => void)[]> = {}
-      const stdoutHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
-      const stderrHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
-
-      return {
-        pid: 12345,
-        killed: false,
-        kill: jest.fn(),
-        stdout: {
-          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
-            stdoutHandlers[event] = stdoutHandlers[event] || []
-            stdoutHandlers[event].push(cb)
-          }),
-        },
-        stderr: {
-          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
-            stderrHandlers[event] = stderrHandlers[event] || []
-            stderrHandlers[event].push(cb)
-          }),
-        },
-        on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
-          handlers[event] = handlers[event] || []
-          handlers[event].push(cb)
-        }),
-        emit(event: string, ...args: unknown[]) {
-          for (const cb of handlers[event] || []) cb(...args)
-        },
-        emitStdout(event: string, ...args: unknown[]) {
-          for (const cb of stdoutHandlers[event] || []) cb(...args)
-        },
-        emitStderr(event: string, ...args: unknown[]) {
-          for (const cb of stderrHandlers[event] || []) cb(...args)
-        },
-      }
-    }
-
     it('should return error when CLI exits with non-zero code', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-err-1', mockClient, undefined, undefined, 'agent-1')
@@ -189,7 +174,7 @@ describe('chat-executor', () => {
 
     it('should include stderr in error when CLI exits with non-zero code', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-err-2', mockClient, undefined, undefined, 'agent-1')
@@ -207,7 +192,7 @@ describe('chat-executor', () => {
 
     it('should return ENOENT error when claude CLI is not found', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-enoent', mockClient, undefined, undefined, 'agent-1')
@@ -226,7 +211,7 @@ describe('chat-executor', () => {
 
     it('should return generic error for non-ENOENT spawn errors', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-generic-err', mockClient, undefined, undefined, 'agent-1')
@@ -243,7 +228,7 @@ describe('chat-executor', () => {
 
     it('should send error chunk on failure', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-err-chunk', mockClient, undefined, undefined, 'agent-1')
@@ -260,7 +245,7 @@ describe('chat-executor', () => {
 
     it('should send done chunk on success', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-done', mockClient, undefined, undefined, 'agent-1')
@@ -272,15 +257,24 @@ describe('chat-executor', () => {
       const result = await resultPromise
       expect(result.success).toBe(true)
 
-      expect(mockClient.submitChatChunk).toHaveBeenCalledWith('cmd-done', expect.objectContaining({
-        type: 'done',
-        content: 'output text',
-      }), 'agent-1')
+      // done chunk now includes JSON with text + metadata
+      const doneCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+        (call: unknown[]) => (call[1] as { type: string }).type === 'done',
+      )
+      expect(doneCall).toBeTruthy()
+      const doneContent = JSON.parse((doneCall[1] as { content: string }).content)
+      expect(doneContent.text).toBe('output text')
+      expect(doneContent.metadata).toEqual(expect.objectContaining({
+        args: ['-p'],
+        exitCode: 0,
+        hasStderr: false,
+      }))
+      expect(typeof doneContent.metadata.durationMs).toBe('number')
     })
 
     it('should send delta chunks for stdout data', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const resultPromise = executeChatCommand(basePayload, 'cmd-delta', mockClient, undefined, undefined, 'agent-1')
@@ -304,7 +298,7 @@ describe('chat-executor', () => {
 
     it('should pass allowedTools from serverConfig to CLI args', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const serverConfig: AgentServerConfig = {
@@ -335,7 +329,7 @@ describe('chat-executor', () => {
 
     it('should not pass allowedTools when serverConfig has no claudeCodeConfig', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const serverConfig: AgentServerConfig = {
@@ -363,7 +357,7 @@ describe('chat-executor', () => {
 
     it('should not pass allowedTools when array is empty', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const serverConfig: AgentServerConfig = {
@@ -392,9 +386,217 @@ describe('chat-executor', () => {
       )
     })
 
+    it('should pass addDirs from serverConfig as --add-dir args', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const serverConfig: AgentServerConfig = {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: true,
+        externalAgentEnabled: true,
+        chatMode: 'agent',
+        claudeCodeConfig: {
+          addDirs: ['~/projects/MBC_01'],
+        },
+      }
+
+      const resultPromise = executeChatCommand(basePayload, 'cmd-dirs', mockClient, serverConfig, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      expect(args).toContain('--add-dir')
+      // ~ should be resolved to homedir
+      const addDirIdx = args.indexOf('--add-dir')
+      expect(args[addDirIdx + 1]).not.toContain('~')
+      expect(args[addDirIdx + 1]).toContain('projects/MBC_01')
+    })
+
+    it('should not pass --add-dir when addDirs is empty', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const serverConfig: AgentServerConfig = {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: true,
+        externalAgentEnabled: true,
+        chatMode: 'agent',
+        claudeCodeConfig: {
+          addDirs: [],
+        },
+      }
+
+      const resultPromise = executeChatCommand(basePayload, 'cmd-no-dirs', mockClient, serverConfig, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      expect(spawn).toHaveBeenCalledWith(
+        'claude',
+        ['-p', 'Hello, world!'],
+        expect.any(Object),
+      )
+    })
+
+    it('should pass --append-system-prompt for Japanese locale', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const payload: ChatPayload = { message: 'Hello', locale: 'ja' }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-locale-ja', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      expect(args).toContain('--append-system-prompt')
+      const promptIdx = args.indexOf('--append-system-prompt')
+      expect(args[promptIdx + 1]).toContain('Japanese')
+    })
+
+    it('should pass --append-system-prompt for English locale', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const payload: ChatPayload = { message: 'Hello', locale: 'en' }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-locale-en', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      expect(args).toContain('--append-system-prompt')
+      const promptIdx = args.indexOf('--append-system-prompt')
+      expect(args[promptIdx + 1]).toContain('English')
+    })
+
+    it('should not pass --append-system-prompt when locale is not provided', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const resultPromise = executeChatCommand(basePayload, 'cmd-no-locale', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      expect(spawn).toHaveBeenCalledWith(
+        'claude',
+        ['-p', 'Hello, world!'],
+        expect.any(Object),
+      )
+    })
+
+    it('should inject AWS credentials into env when awsAccountId is provided', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildSingleAccountAwsEnv } = require('../../src/aws-credential-builder')
+      ;(buildSingleAccountAwsEnv as jest.Mock).mockResolvedValueOnce({
+        env: {
+          AWS_ACCESS_KEY_ID: 'AKIATEST',
+          AWS_SECRET_ACCESS_KEY: 'secretTest',
+          AWS_SESSION_TOKEN: 'tokenTest',
+          AWS_DEFAULT_REGION: 'ap-northeast-1',
+        },
+        errors: [],
+        ssoAuthRequired: [],
+      })
+
+      const payload: ChatPayload = { message: 'List S3 buckets', awsAccountId: 'prod' }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-aws', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      expect(buildSingleAccountAwsEnv).toHaveBeenCalledWith(mockClient, 'prod')
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).toHaveProperty('AWS_ACCESS_KEY_ID', 'AKIATEST')
+      expect(env).toHaveProperty('AWS_SECRET_ACCESS_KEY', 'secretTest')
+      expect(env).toHaveProperty('AWS_SESSION_TOKEN', 'tokenTest')
+      expect(env).toHaveProperty('AWS_DEFAULT_REGION', 'ap-northeast-1')
+    })
+
+    it('should not inject AWS credentials when awsAccountId is not provided', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const resultPromise = executeChatCommand(basePayload, 'cmd-no-aws', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).not.toHaveProperty('AWS_ACCESS_KEY_ID')
+      expect(env).not.toHaveProperty('AWS_SECRET_ACCESS_KEY')
+    })
+
+    it('should continue without AWS credentials when buildSingleAccountAwsEnv returns undefined', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildSingleAccountAwsEnv } = require('../../src/aws-credential-builder')
+      ;(buildSingleAccountAwsEnv as jest.Mock).mockResolvedValueOnce({ errors: [], ssoAuthRequired: [] })
+
+      const payload: ChatPayload = { message: 'Hello', awsAccountId: 'invalid' }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-aws-fail', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).not.toHaveProperty('AWS_ACCESS_KEY_ID')
+    })
+
     it('should filter CLAUDECODE env vars from child process', async () => {
       const { spawn } = require('child_process')
-      const mockProcess = createMockProcess()
+      const mockProcess = createMockChildProcess()
       spawn.mockReturnValue(mockProcess)
 
       const originalEnv = process.env
@@ -413,6 +615,357 @@ describe('chat-executor', () => {
       expect(env).toHaveProperty('PATH')
 
       process.env = originalEnv
+    })
+  })
+
+  describe('AWS profile mode', () => {
+    const projectConfig: ProjectConfigResponse = {
+      configHash: 'test-hash',
+      project: { projectCode: 'TEST', projectName: 'Test Project' },
+      agent: {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: true,
+        externalAgentEnabled: true,
+        allowedTools: [],
+      },
+      aws: {
+        accounts: [
+          {
+            id: '1',
+            name: 'dev',
+            description: 'Dev account',
+            region: 'ap-northeast-1',
+            accountId: '123456789012',
+            auth: { method: 'access_key' },
+            isDefault: true,
+          },
+        ],
+      },
+    }
+
+    it('should use profile mode when projectDir and projectConfig.aws.accounts are present', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildAwsProfileCredentials } = require('../../src/aws-credential-builder')
+      ;(buildAwsProfileCredentials as jest.Mock).mockResolvedValueOnce({
+        env: {
+          AWS_CONFIG_FILE: '/mock/.ai-support-agent/aws/config',
+          AWS_SHARED_CREDENTIALS_FILE: '/mock/.ai-support-agent/aws/credentials',
+          AWS_PROFILE: 'TEST-dev',
+          AWS_DEFAULT_REGION: 'ap-northeast-1',
+        },
+        errors: [],
+        ssoAuthRequired: [],
+      })
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-profile', mockClient, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', projectConfig,
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      // Should have called buildAwsProfileCredentials
+      expect(buildAwsProfileCredentials).toHaveBeenCalledWith(mockClient, '/tmp/project', projectConfig)
+
+      // Should have used profile env
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).toHaveProperty('AWS_CONFIG_FILE')
+      expect(env).toHaveProperty('AWS_SHARED_CREDENTIALS_FILE')
+      expect(env).toHaveProperty('AWS_PROFILE', 'TEST-dev')
+    })
+
+    it('should fall back to legacy mode when no projectConfig', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildSingleAccountAwsEnv } = require('../../src/aws-credential-builder')
+      ;(buildSingleAccountAwsEnv as jest.Mock).mockResolvedValueOnce({
+        env: {
+          AWS_ACCESS_KEY_ID: 'AKIALEGACY',
+          AWS_SECRET_ACCESS_KEY: 'secretLegacy',
+          AWS_SESSION_TOKEN: 'tokenLegacy',
+          AWS_DEFAULT_REGION: 'us-east-1',
+        },
+        errors: [],
+        ssoAuthRequired: [],
+      })
+
+      const payload: ChatPayload = { message: 'Hello', awsAccountId: 'legacy-account' }
+
+      const resultPromise = executeChatCommand(
+        payload, 'cmd-legacy', mockClient, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', undefined, // no projectConfig
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      expect(buildSingleAccountAwsEnv).toHaveBeenCalledWith(mockClient, 'legacy-account')
+
+      // Should use legacy env vars
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).toHaveProperty('AWS_ACCESS_KEY_ID', 'AKIALEGACY')
+      expect(env).toHaveProperty('AWS_SECRET_ACCESS_KEY', 'secretLegacy')
+    })
+
+    it('should continue without AWS env when all credential fetches fail in profile mode', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildAwsProfileCredentials } = require('../../src/aws-credential-builder')
+      ;(buildAwsProfileCredentials as jest.Mock).mockResolvedValueOnce({ errors: ['Credential fetch failed'], ssoAuthRequired: [] })
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-profile-fail', mockClient, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', projectConfig,
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      // Should NOT have profile env vars (all credentials failed)
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const env = spawnCall[2].env
+      expect(env).not.toHaveProperty('AWS_PROFILE')
+    })
+
+    it('should send system chunk when SSO auth is required in profile mode', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildAwsProfileCredentials } = require('../../src/aws-credential-builder')
+      ;(buildAwsProfileCredentials as jest.Mock).mockResolvedValueOnce({
+        errors: ['SSO auth expired'],
+        ssoAuthRequired: [{ accountId: '123456789012', accountName: 'dev' }],
+      })
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-sso-system', mockClient, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', projectConfig,
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      // Should have sent a system chunk with sso_auth_required info
+      const systemCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+        (call: unknown[]) => (call[1] as { type: string }).type === 'system',
+      )
+      expect(systemCall).toBeTruthy()
+      const systemContent = JSON.parse((systemCall[1] as { content: string }).content)
+      expect(systemContent.type).toBe('sso_auth_required')
+      expect(systemContent.accountId).toBe('123456789012')
+      expect(systemContent.accountName).toBe('dev')
+      expect(systemContent.projectCode).toBe('TEST')
+    })
+
+    it('should send system chunk when SSO auth is required in legacy mode', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildSingleAccountAwsEnv } = require('../../src/aws-credential-builder')
+      ;(buildSingleAccountAwsEnv as jest.Mock).mockResolvedValueOnce({
+        errors: ['SSO auth expired'],
+        ssoAuthRequired: [{ accountId: '987654321098', accountName: 'prod-account' }],
+      })
+
+      const payload: ChatPayload = { message: 'Hello', awsAccountId: 'prod-account', projectCode: 'PROJ_01' }
+
+      const resultPromise = executeChatCommand(
+        payload, 'cmd-sso-legacy', mockClient, undefined, 'claude_code', 'agent-1',
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      // Should have sent a system chunk with sso_auth_required info
+      const systemCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+        (call: unknown[]) => (call[1] as { type: string }).type === 'system',
+      )
+      expect(systemCall).toBeTruthy()
+      const systemContent = JSON.parse((systemCall[1] as { content: string }).content)
+      expect(systemContent.type).toBe('sso_auth_required')
+      expect(systemContent.accountId).toBe('987654321098')
+      expect(systemContent.accountName).toBe('prod-account')
+      expect(systemContent.projectCode).toBe('PROJ_01')
+    })
+
+    it('should not send system chunk when no SSO auth is required', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const { buildAwsProfileCredentials } = require('../../src/aws-credential-builder')
+      ;(buildAwsProfileCredentials as jest.Mock).mockResolvedValueOnce({
+        env: { AWS_PROFILE: 'TEST-dev' },
+        errors: [],
+        ssoAuthRequired: [],
+      })
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-no-sso', mockClient, undefined, 'claude_code', 'agent-1',
+        '/tmp/project', projectConfig,
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      // Should NOT have sent any system chunk
+      const systemCall = (mockClient.submitChatChunk as jest.Mock).mock.calls.find(
+        (call: unknown[]) => (call[1] as { type: string }).type === 'system',
+      )
+      expect(systemCall).toBeUndefined()
+    })
+  })
+
+  describe('conversation history', () => {
+    it('should include conversation history in message for claude_code mode', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const payload: ChatPayload = {
+        message: 'Follow up',
+        history: [
+          { role: 'user', content: 'First question' },
+          { role: 'assistant', content: 'First answer' },
+        ],
+      }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-history', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      const messageArg = args[args.length - 1]
+      expect(messageArg).toContain('<conversation_history>')
+      expect(messageArg).toContain('[user]: First question')
+      expect(messageArg).toContain('[assistant]: First answer')
+      expect(messageArg).toContain('Follow up')
+    })
+
+    it('should pass original message without history when history is empty', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const payload: ChatPayload = {
+        message: 'No history here',
+        history: [],
+      }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-no-history', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      const messageArg = args[args.length - 1]
+      expect(messageArg).toBe('No history here')
+      expect(messageArg).not.toContain('<conversation_history>')
+    })
+
+    it('should pass original message when history is not provided', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const resultPromise = executeChatCommand(basePayload, 'cmd-no-history-field', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      const messageArg = args[args.length - 1]
+      expect(messageArg).toBe('Hello, world!')
+    })
+  })
+
+  describe('project directory auto-add dirs', () => {
+    it('should merge auto-add dirs with server addDirs when projectDir is set', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockChildProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const serverConfig: AgentServerConfig = {
+        agentEnabled: true,
+        builtinAgentEnabled: true,
+        builtinFallbackEnabled: true,
+        externalAgentEnabled: true,
+        chatMode: 'agent',
+        claudeCodeConfig: {
+          addDirs: ['/server/dir'],
+        },
+      }
+
+      const resultPromise = executeChatCommand(
+        basePayload, 'cmd-auto-add', mockClient, serverConfig, 'claude_code', 'agent-1',
+        '/tmp/project',
+      )
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      // Should include both auto-add dirs and server dirs
+      expect(args).toContain('--add-dir')
+      // auto-add dirs: /mock/repos, /mock/docs, server dir: /server/dir
+      const addDirIndices = args.reduce<number[]>((acc, arg, i) => {
+        if (arg === '--add-dir') acc.push(i)
+        return acc
+      }, [])
+      expect(addDirIndices.length).toBe(3) // repos, docs, server/dir
     })
   })
 })

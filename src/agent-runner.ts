@@ -27,9 +27,10 @@ export function startProjectAgent(
     pollInterval: number
     heartbeatInterval: number
     agentChatMode?: AgentChatMode
+    defaultProjectDir?: string
   },
 ): { stop: () => void; client: import('./api-client').ApiClient } {
-  const agent = new ProjectAgent(project, agentId, options, undefined, options.agentChatMode)
+  const agent = new ProjectAgent(project, agentId, options, undefined, options.agentChatMode, options.defaultProjectDir)
   agent.start()
   return {
     stop: () => agent.stop(),
@@ -79,11 +80,12 @@ function runSingleProject(
   agentId: string,
   options: RunnerOptions,
   agentChatMode?: AgentChatMode,
+  defaultProjectDir?: string,
 ): void {
   const { pollInterval, heartbeatInterval } = resolveIntervals(options)
 
   logger.info(t('runner.starting'))
-  const agent = startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode })
+  const agent = startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode, defaultProjectDir })
 
   const autoUpdateConfig = resolveAutoUpdateConfig(options)
   let updater: AutoUpdaterHandle | undefined
@@ -138,7 +140,7 @@ export async function startAgent(options: RunnerOptions): Promise<void> {
       apiUrl: options.apiUrl,
     }
 
-    runSingleProject(project, agentId, options, config?.agentChatMode)
+    runSingleProject(project, agentId, options, config?.agentChatMode, config?.defaultProjectDir)
     saveConfig({ lastConnected: new Date().toISOString() })
     return
   }
@@ -179,7 +181,7 @@ export async function startAgent(options: RunnerOptions): Promise<void> {
   logger.info(t('runner.startingMulti', { count: projects.length }))
 
   const agents = projects.map((project) =>
-    startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode: config.agentChatMode }),
+    startProjectAgent(project, agentId, { pollInterval, heartbeatInterval, agentChatMode: config.agentChatMode, defaultProjectDir: config.defaultProjectDir }),
   )
 
   saveConfig({ lastConnected: new Date().toISOString() })

@@ -1,6 +1,8 @@
 import WebSocket from 'ws'
 
+import { DEFAULT_APPSYNC_TIMEOUT_MS } from './constants'
 import { logger } from './logger'
+import { calculateBackoff } from './retry-strategy'
 import { getErrorMessage } from './utils'
 
 export interface AppSyncNotification {
@@ -155,7 +157,7 @@ export class AppSyncSubscriber {
   private handleMessage(msg: AppSyncMessage, resolveConnect?: (value: void) => void): void {
     switch (msg.type) {
       case 'connection_ack': {
-        const timeoutMs = (msg.payload?.connectionTimeoutMs as number) ?? 300000
+        const timeoutMs = (msg.payload?.connectionTimeoutMs as number) ?? DEFAULT_APPSYNC_TIMEOUT_MS
         this.keepAliveTimeoutMs = timeoutMs
         this.resetKeepAliveTimer()
         logger.debug(`AppSync: Connection acknowledged (timeout: ${timeoutMs}ms)`)
@@ -236,7 +238,11 @@ export class AppSyncSubscriber {
     }
 
     this.reconnectAttempts++
-    const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1)
+    const delay = calculateBackoff({
+      baseDelayMs: RECONNECT_BASE_DELAY_MS,
+      attempt: this.reconnectAttempts - 1,
+      jitter: false,
+    })
     logger.info(`AppSync: Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${MAX_RECONNECT_RETRIES})`)
 
     await new Promise<void>((resolve) => setTimeout(resolve, delay))

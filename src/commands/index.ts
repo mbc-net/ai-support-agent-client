@@ -1,6 +1,7 @@
 import type { ApiClient } from '../api-client'
+import { ERR_CHAT_REQUIRES_CLIENT, ERR_CONFIG_SYNC_REQUIRES_CALLBACK, ERR_SETUP_REQUIRES_CALLBACK, LOG_DEBUG_LIMIT } from '../constants'
 import { logger } from '../logger'
-import type { AgentChatMode, AgentCommandType, AgentServerConfig, CommandDispatch, CommandResult } from '../types'
+import type { AgentChatMode, AgentCommandType, AgentServerConfig, CommandDispatch, CommandResult, ProjectConfigResponse } from '../types'
 import { getErrorMessage } from '../utils'
 
 import { executeChatCommand } from './chat-executor'
@@ -15,6 +16,11 @@ export interface ExecuteCommandOptions {
   serverConfig?: AgentServerConfig
   activeChatMode?: AgentChatMode
   agentId?: string
+  projectDir?: string
+  projectConfig?: ProjectConfigResponse
+  mcpConfigPath?: string
+  onSetup?: () => Promise<void>
+  onConfigSync?: () => Promise<void>
 }
 
 // Overload: type-safe discriminated union
@@ -45,7 +51,7 @@ export async function executeCommand(
     switch (type) {
       case 'execute_command': {
         const cmd = (p as Record<string, unknown>).command
-        logger.debug(`[shell] command="${String(cmd ?? '').substring(0, 200)}"`)
+        logger.debug(`[shell] command="${String(cmd ?? '').substring(0, LOG_DEBUG_LIMIT)}"`)
         return await executeShellCommand(p)
       }
       case 'file_read': {
@@ -72,9 +78,21 @@ export async function executeCommand(
       }
       case 'chat':
         if (!opts?.commandId || !opts?.client) {
-          return { success: false, error: 'chat command requires commandId and client' }
+          return { success: false, error: ERR_CHAT_REQUIRES_CLIENT }
         }
-        return await executeChatCommand(p, opts.commandId, opts.client, opts.serverConfig, opts.activeChatMode, opts.agentId)
+        return await executeChatCommand(p, opts.commandId, opts.client, opts.serverConfig, opts.activeChatMode, opts.agentId, opts.projectDir, opts.projectConfig, opts.mcpConfigPath)
+      case 'setup':
+        if (!opts?.onSetup) {
+          return { success: false, error: ERR_SETUP_REQUIRES_CALLBACK }
+        }
+        await opts.onSetup()
+        return { success: true, data: 'setup completed' }
+      case 'config_sync':
+        if (!opts?.onConfigSync) {
+          return { success: false, error: ERR_CONFIG_SYNC_REQUIRES_CALLBACK }
+        }
+        await opts.onConfigSync()
+        return { success: true, data: 'config sync completed' }
       default:
         logger.warn(`Unknown command type: ${type}`)
         return { success: false, error: `Unknown command type: ${type}` }

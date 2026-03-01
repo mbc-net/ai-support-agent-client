@@ -1,12 +1,17 @@
-import { spawn } from 'child_process'
-
 import { ApiClient } from '../api-client'
+import { type AwsCredentialResult, buildAwsProfileCredentials, buildSingleAccountAwsEnv } from '../aws-credential-builder'
+import { ERR_AGENT_ID_REQUIRED, ERR_MESSAGE_REQUIRED, LOG_MESSAGE_LIMIT } from '../constants'
 import { logger } from '../logger'
-import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
-import { getErrorMessage, parseString } from '../utils'
+import type { AgentChatMode, AgentServerConfig, ChatChunkType, ChatPayload, CommandResult, ProjectConfigResponse } from '../types'
+import { getErrorMessage, parseString, truncateString } from '../utils'
 
+import { getAutoAddDirs } from '../project-dir'
 import { executeApiChatCommand } from './api-chat-executor'
-import { createChunkSender } from './shared-chat-utils'
+import { runClaudeCode } from './claude-code-runner'
+import { createChunkSender, formatHistoryForClaudeCode, parseHistory } from './shared-chat-utils'
+
+// Re-export for backward compatibility with existing consumers
+export { buildClaudeArgs, buildCleanEnv } from './claude-code-runner'
 
 /**
  * エージェントチャットモードに応じてチャットメッセージを処理する
@@ -22,9 +27,12 @@ export async function executeChatCommand(
   serverConfig?: AgentServerConfig,
   activeChatMode?: AgentChatMode,
   agentId?: string,
+  projectDir?: string,
+  projectConfig?: ProjectConfigResponse,
+  mcpConfigPath?: string,
 ): Promise<CommandResult> {
   if (!agentId) {
-    return { success: false, error: 'agentId is required for chat command' }
+    return { success: false, error: ERR_AGENT_ID_REQUIRED }
   }
 
   const mode = activeChatMode ?? 'claude_code'
@@ -34,7 +42,7 @@ export async function executeChatCommand(
       return executeApiChatCommand(payload, commandId, client, serverConfig, agentId)
     case 'claude_code':
     default:
-      return executeClaudeCodeChat(payload, commandId, client, agentId, serverConfig)
+      return executeClaudeCodeChat(payload, commandId, client, agentId, serverConfig, projectDir, projectConfig, mcpConfigPath)
   }
 }
 
@@ -49,24 +57,71 @@ async function executeClaudeCodeChat(
   client: ApiClient,
   agentId: string,
   serverConfig?: AgentServerConfig,
+  projectDir?: string,
+  projectConfig?: ProjectConfigResponse,
+  mcpConfigPath?: string,
 ): Promise<CommandResult> {
   const message = parseString(payload.message)
   if (!message) {
-    return { success: false, error: 'message is required' }
+    return { success: false, error: ERR_MESSAGE_REQUIRED }
   }
 
-  logger.info(`[chat] Starting chat command [${commandId}]: message="${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`)
+  logger.info(`[chat] Starting chat command [${commandId}]: message="${truncateString(message, LOG_MESSAGE_LIMIT)}"`)
 
   const { sendChunk, getChunkIndex } = createChunkSender(commandId, client, agentId, 'chat', { debugLog: true })
 
   try {
     const allowedTools = serverConfig?.claudeCodeConfig?.allowedTools
-    logger.debug(`[chat] Spawning claude CLI for command [${commandId}]${allowedTools?.length ? ` with allowedTools: ${allowedTools.join(', ')}` : ''}`)
-    const result = await runClaudeCode(message, sendChunk, allowedTools)
-    logger.info(`[chat] Chat command completed [${commandId}]: output=${result.length} chars, ${getChunkIndex()} chunks sent`)
-    // 完了チャンクを送信
-    await sendChunk('done', result)
-    return { success: true, data: result }
+    const serverAddDirs = serverConfig?.claudeCodeConfig?.addDirs ?? []
+    // Merge project directory auto-add dirs with server-configured dirs
+    let addDirs: string[] | undefined
+    if (projectDir) {
+      const autoAddDirs = getAutoAddDirs(projectDir)
+      addDirs = [...autoAddDirs, ...serverAddDirs]
+    } else {
+      addDirs = serverAddDirs.length > 0 ? serverAddDirs : undefined
+    }
+    const locale = parseString(payload.locale) ?? undefined
+
+    // AWS認証情報を取得（プロファイル方式 or 環境変数直接注入）
+    let awsEnv: Record<string, string> | undefined
+    const projectCode = parseString(payload.projectCode) ?? projectConfig?.project.projectCode
+    if (projectDir && projectConfig?.aws?.accounts?.length) {
+      // プロファイル方式: 全アカウントの認証情報を取得してプロファイルファイルに書き込み
+      const awsResult = await buildAwsProfileCredentials(client, projectDir, projectConfig)
+      awsEnv = awsResult.env
+      await sendAwsCredentialNotices(awsResult, projectCode, sendChunk)
+    } else {
+      // フォールバック: 単一アカウントの環境変数直接注入（従来方式）
+      const awsAccountId = parseString(payload.awsAccountId) ?? undefined
+      const awsResult = await buildSingleAccountAwsEnv(client, awsAccountId)
+      awsEnv = awsResult.env
+      await sendAwsCredentialNotices(awsResult, projectCode, sendChunk)
+    }
+
+    // 会話履歴をメッセージに埋め込む（Claude Code CLI用）
+    const history = parseHistory(payload.history)
+    const messageWithHistory = formatHistoryForClaudeCode(history, message)
+
+    const logDetails = [
+      allowedTools?.length ? `allowedTools: ${allowedTools.join(', ')}` : '(no allowedTools)',
+      addDirs?.length ? `addDirs: ${addDirs.join(', ')}` : null,
+      locale ? `locale=${locale}` : null,
+      awsEnv ? 'AWS credentials' : null,
+      mcpConfigPath ? 'MCP config' : null,
+      history.length > 0 ? `${history.length} history messages` : null,
+    ].filter(Boolean).join(', ')
+    logger.debug(`[chat] Spawning claude CLI for command [${commandId}]: ${logDetails}`)
+    logger.debug(`[chat] serverConfig.claudeCodeConfig: ${JSON.stringify(serverConfig?.claudeCodeConfig ?? null)}`)
+    const result = await runClaudeCode(messageWithHistory, sendChunk, allowedTools, addDirs, locale, awsEnv, mcpConfigPath)
+    logger.info(`[chat] Chat command completed [${commandId}]: output=${result.text.length} chars, ${getChunkIndex()} chunks sent, duration=${result.metadata.durationMs}ms`)
+    // 完了チャンクを送信（metadata を含める）
+    const doneContent = JSON.stringify({
+      text: result.text,
+      metadata: result.metadata,
+    })
+    await sendChunk('done', doneContent)
+    return { success: true, data: result.text }
   } catch (error) {
     const errorMessage = getErrorMessage(error)
     logger.error(`[chat] Chat command failed [${commandId}]: ${errorMessage}`)
@@ -75,96 +130,22 @@ async function executeClaudeCodeChat(
   }
 }
 
-/**
- * Claude Code CLI をサブプロセスとして実行し、出力をストリーミングで返す
- */
-async function runClaudeCode(
-  message: string,
+async function sendAwsCredentialNotices(
+  awsResult: AwsCredentialResult,
+  projectCode: string | undefined,
   sendChunk: (type: ChatChunkType, content: string) => Promise<void>,
-  allowedTools?: string[],
-): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    // claude CLI が利用可能か確認し、print モードで実行
-    // Claude Code セッション内からの起動時にネスト検出やSSEポート干渉を回避するため、
-    // CLAUDECODE および CLAUDE_CODE_* 環境変数を除外
-    const cleanEnv: Record<string, string> = {}
-    for (const [key, value] of Object.entries(process.env)) {
-      if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) continue
-      if (value !== undefined) cleanEnv[key] = value
-    }
-
-    const args = ['-p']
-    if (allowedTools && allowedTools.length > 0) {
-      for (const tool of allowedTools) {
-        args.push('--allowedTools', tool)
-      }
-    }
-    args.push(message)
-
-    const child = spawn('claude', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: cleanEnv,
-    })
-
-    logger.debug(`[chat] claude CLI spawned (pid=${child.pid}, CLAUDECODE removed=${!cleanEnv['CLAUDECODE']})`)
-
-    let fullOutput = ''
-    let stderrOutput = ''
-
-    // タイムアウト: 120秒で応答がなければ強制終了
-    let sigkillTimer: NodeJS.Timeout | undefined
-    const timeout = setTimeout(() => {
-      logger.warn(`[chat] claude CLI timed out after 120s (pid=${child.pid}), sending SIGTERM`)
-      child.kill('SIGTERM')
-      // SIGTERM後5秒で応答なければSIGKILL
-      sigkillTimer = setTimeout(() => {
-        if (!child.killed) {
-          logger.warn(`[chat] claude CLI still running after SIGTERM, sending SIGKILL (pid=${child.pid})`)
-          child.kill('SIGKILL')
-        }
-      }, 5_000)
-    }, 120_000)
-
-    child.stdout.on('data', (data: Buffer) => {
-      const text = data.toString()
-      fullOutput += text
-      // delta チャンクとしてAPIに送信（fire-and-forget）
-      void sendChunk('delta', text)
-    })
-
-    child.stderr.on('data', (data: Buffer) => {
-      const text = data.toString()
-      stderrOutput += text
-      logger.debug(`[chat] claude CLI stderr: ${text.substring(0, 200)}`)
-    })
-
-    child.on('error', (error) => {
-      clearTimeout(timeout)
-      if (sigkillTimer) clearTimeout(sigkillTimer)
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        reject(
-          new Error(
-            'claude CLI が見つかりません。Claude Code がインストールされていることを確認してください。',
-          ),
-        )
-      } else {
-        reject(error)
-      }
-    })
-
-    child.on('close', (code) => {
-      clearTimeout(timeout)
-      if (sigkillTimer) clearTimeout(sigkillTimer)
-      logger.debug(`[chat] claude CLI exited (pid=${child.pid}, code=${code}, stdout=${fullOutput.length}b, stderr=${stderrOutput.length}b)`)
-      if (code === 0) {
-        resolve(fullOutput)
-      } else {
-        reject(
-          new Error(
-            `claude CLI がコード ${code} で終了しました${stderrOutput ? `: ${stderrOutput}` : ''}`,
-          ),
-        )
-      }
-    })
-  })
+): Promise<void> {
+  if (awsResult.errors.length > 0) {
+    const notice = `⚠️ ${awsResult.errors.join('\n')}\n\n`
+    await sendChunk('delta', notice)
+  }
+  // SSO再認証が必要なアカウントの情報を system チャンクで送信
+  for (const ssoInfo of awsResult.ssoAuthRequired) {
+    await sendChunk('system', JSON.stringify({
+      type: 'sso_auth_required',
+      accountId: ssoInfo.accountId,
+      accountName: ssoInfo.accountName,
+      projectCode,
+    }))
+  }
 }

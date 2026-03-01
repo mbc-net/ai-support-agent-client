@@ -25,6 +25,19 @@ jest.mock('../src/chat-mode-detector', () => ({
 jest.mock('../src/appsync-subscriber', () => ({
   AppSyncSubscriber: jest.fn(),
 }))
+jest.mock('../src/project-dir', () => ({
+  initProjectDir: jest.fn().mockReturnValue('/tmp/test-project'),
+}))
+jest.mock('../src/project-config-sync', () => ({
+  syncProjectConfig: jest.fn().mockResolvedValue({
+    configHash: 'default-hash',
+    project: { projectCode: 'test-proj', projectName: 'Test' },
+    agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+  }),
+}))
+jest.mock('../src/aws-profile', () => ({
+  writeAwsConfig: jest.fn(),
+}))
 jest.mock('os', () => {
   const actual = jest.requireActual<typeof os>('os')
   return {
@@ -463,7 +476,7 @@ describe('startProjectAgent', () => {
 
     expect(mockClient.getPendingCommands).toHaveBeenCalledWith('agent-1')
     expect(mockClient.getCommand).toHaveBeenCalledWith('cmd-1', 'agent-1')
-    expect(mockedExecuteCommand).toHaveBeenCalledWith('execute_command', { command: 'echo hi' }, { commandId: 'cmd-1', client: mockClient, serverConfig: expect.any(Object), activeChatMode: undefined, agentId: 'agent-1' })
+    expect(mockedExecuteCommand).toHaveBeenCalledWith('execute_command', { command: 'echo hi' }, expect.objectContaining({ commandId: 'cmd-1', client: mockClient, serverConfig: expect.any(Object), agentId: 'agent-1' }))
     expect(mockClient.submitResult).toHaveBeenCalledWith('cmd-1', { success: true, data: 'hi' }, 'agent-1')
 
     agent.stop()

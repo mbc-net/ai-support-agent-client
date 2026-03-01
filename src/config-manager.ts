@@ -8,7 +8,7 @@ import { t } from './i18n'
 import { logger } from './logger'
 import type { AgentConfig, LegacyAgentConfig, ProjectRegistration } from './types'
 
-function getConfigDir(): string {
+export function getConfigDir(): string {
   if (path.isAbsolute(CONFIG_DIR)) {
     return CONFIG_DIR
   }
@@ -89,6 +89,7 @@ export function saveConfig(config: Partial<AgentConfig>): void {
     projects: config.projects ?? existing?.projects,
     autoUpdate: config.autoUpdate ?? existing?.autoUpdate,
     agentChatMode: config.agentChatMode ?? existing?.agentChatMode,
+    defaultProjectDir: config.defaultProjectDir ?? existing?.defaultProjectDir,
   }
 
   const configPath = getConfigPath()
@@ -151,4 +152,26 @@ export function getProjectList(
   config: AgentConfig,
 ): ProjectRegistration[] {
   return config.projects ?? []
+}
+
+/**
+ * Set projectDir for a specific project
+ */
+export function setProjectDir(projectCode: string, projectDir: string): boolean {
+  const config = loadConfig()
+  const projects = config?.projects ?? []
+  const project = projects.find((p) => p.projectCode === projectCode)
+  if (!project) {
+    return false
+  }
+  project.projectDir = projectDir
+  saveConfig({ projects })
+  return true
+}
+
+/**
+ * Set default project directory template
+ */
+export function setDefaultProjectDir(template: string): void {
+  saveConfig({ defaultProjectDir: template })
 }

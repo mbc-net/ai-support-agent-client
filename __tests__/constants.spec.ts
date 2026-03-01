@@ -62,6 +62,25 @@ describe('constants', () => {
     expect(constants.PROJECT_CODE_CLI_DIRECT).toBe('cli-direct')
     expect(constants.PROJECT_CODE_ENV_DEFAULT).toBe('env-default')
 
+    // Anthropic API
+    expect(constants.DEFAULT_ANTHROPIC_MODEL).toBe('claude-sonnet-4-6-20250514')
+    expect(constants.ANTHROPIC_API_VERSION).toBe('2023-06-01')
+    expect(constants.ANTHROPIC_API_URL).toBe('https://api.anthropic.com/v1/messages')
+    expect(constants.DEFAULT_MAX_TOKENS).toBe(4096)
+
+    // Chat executor
+    expect(constants.CHAT_TIMEOUT).toBe(120_000)
+    expect(constants.CHAT_SIGKILL_DELAY).toBe(5_000)
+    expect(constants.CLAUDE_DETECT_TIMEOUT_MS).toBe(5_000)
+    expect(constants.DEFAULT_APPSYNC_TIMEOUT_MS).toBe(300_000)
+
+    // Log truncation
+    expect(constants.LOG_MESSAGE_LIMIT).toBe(100)
+    expect(constants.LOG_PAYLOAD_LIMIT).toBe(500)
+    expect(constants.LOG_RESULT_LIMIT).toBe(300)
+    expect(constants.LOG_DEBUG_LIMIT).toBe(200)
+    expect(constants.CHUNK_LOG_LIMIT).toBe(100)
+
     // API endpoints
     expect(constants.API_ENDPOINTS.REGISTER).toBe('/api/agent/register')
     expect(constants.API_ENDPOINTS.HEARTBEAT).toBe('/api/agent/heartbeat')

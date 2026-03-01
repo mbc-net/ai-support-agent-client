@@ -1,3 +1,8 @@
+export interface HistoryMessage {
+  role: string
+  content: string
+}
+
 export type ReleaseChannel = 'latest' | 'beta' | 'alpha'
 
 export interface VersionInfo {
@@ -17,6 +22,7 @@ export interface ProjectRegistration {
   projectCode: string
   token: string
   apiUrl: string
+  projectDir?: string
 }
 
 export interface AgentConfig {
@@ -27,6 +33,7 @@ export interface AgentConfig {
   projects?: ProjectRegistration[]
   autoUpdate?: AutoUpdateConfig
   agentChatMode?: AgentChatMode
+  defaultProjectDir?: string
 }
 
 /**
@@ -46,6 +53,8 @@ export type AgentCommandType =
   | 'process_list'
   | 'process_kill'
   | 'chat'
+  | 'setup'
+  | 'config_sync'
 
 export type AgentCommandStatus =
   | 'PENDING'
@@ -134,6 +143,8 @@ export interface ChatPayload {
   conversationId?: unknown
   projectCode?: unknown
   history?: unknown
+  locale?: unknown
+  awsAccountId?: unknown
 }
 
 /**
@@ -162,7 +173,88 @@ export interface AgentServerConfig {
     maxTokens?: number
     systemPrompt?: string
     allowedTools?: string[]
+    addDirs?: string[]
   }
+}
+
+export interface AwsCredentials {
+  accessKeyId: string
+  secretAccessKey: string
+  sessionToken?: string
+  region: string
+}
+
+export interface ProjectConfigResponse {
+  configHash: string
+  project: {
+    projectCode: string
+    projectName: string
+    description?: string
+  }
+  agent: {
+    agentEnabled: boolean
+    builtinAgentEnabled: boolean
+    builtinFallbackEnabled: boolean
+    externalAgentEnabled: boolean
+    allowedTools: string[]
+    claudeCodeConfig?: {
+      additionalDirs?: string[]
+      appendSystemPrompt?: string
+    }
+  }
+  aws?: {
+    accounts: Array<{
+      id: string
+      name: string
+      description?: string
+      profileName?: string
+      region: string
+      accountId: string
+      auth: { method: 'access_key' } | { method: 'sso'; startUrl: string; ssoRegion: string; permissionSetName: string }
+      isDefault: boolean
+    }>
+    cli?: {
+      defaultProfile?: string
+    }
+  }
+  databases?: Array<{
+    name: string
+    host: string
+    port: number
+    database: string
+    engine: string
+    writePermissions?: { insert: boolean; update: boolean; delete: boolean }
+  }>
+  documentation?: {
+    sources: Array<{
+      type: 'url' | 's3'
+      url?: string
+      bucket?: string
+      prefix?: string
+    }>
+  }
+}
+
+export interface DbCredentials {
+  name: string
+  engine: string
+  host: string
+  port: number
+  database: string
+  user: string
+  password: string
+  writePermissions?: { insert: boolean; update: boolean; delete: boolean }
+}
+
+export interface CachedProjectConfig {
+  cachedAt: string
+  configHash: string
+  config: Omit<ProjectConfigResponse, 'aws'>
+}
+
+export interface HeartbeatResponse {
+  success: true
+  configHash?: string
 }
 
 export type ChatChunkType =
@@ -171,6 +263,7 @@ export type ChatChunkType =
   | 'tool_result'
   | 'done'
   | 'error'
+  | 'system'
 
 export interface ChatChunk {
   index: number
@@ -187,3 +280,5 @@ export type CommandDispatch =
   | { type: 'process_list'; payload: Record<string, never> }
   | { type: 'process_kill'; payload: ProcessKillPayload }
   | { type: 'chat'; payload: ChatPayload }
+  | { type: 'setup'; payload: Record<string, never> }
+  | { type: 'config_sync'; payload: Record<string, never> }
