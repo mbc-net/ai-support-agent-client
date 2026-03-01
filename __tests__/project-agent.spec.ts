@@ -15,7 +15,11 @@ jest.mock('../src/chat-mode-detector', () => ({
   resolveActiveChatMode: jest.fn().mockReturnValue(undefined),
 }))
 jest.mock('../src/project-config-sync', () => ({
-  syncProjectConfig: jest.fn().mockResolvedValue(null),
+  syncProjectConfig: jest.fn().mockResolvedValue({
+    configHash: 'default-hash',
+    project: { projectCode: 'test-proj', projectName: 'Test' },
+    agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+  }),
 }))
 jest.mock('../src/project-dir', () => ({
   initProjectDir: jest.fn().mockReturnValue('/tmp/test-project'),
@@ -677,6 +681,59 @@ describe('ProjectAgent', () => {
       agent.stop()
     })
 
+    it('should retry initial config sync and succeed on second attempt', async () => {
+      // First attempt returns null (fail), second returns config (success)
+      mockedSyncProjectConfig
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          configHash: 'retry-hash',
+          project: { projectCode: 'test-proj', projectName: 'Test' },
+          agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+        })
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      // Let registration complete + first sync attempt
+      await jest.advanceTimersByTimeAsync(100)
+      // Advance past retry delay (2000ms * 1)
+      await jest.advanceTimersByTimeAsync(2000)
+      // Let second sync attempt complete
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(2)
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Initial config sync attempt 1 failed'))
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('Config applied'))
+
+      agent.stop()
+    })
+
+    it('should log warning after all initial config sync retries fail', async () => {
+      // All attempts return null
+      mockedSyncProjectConfig
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      agent.start()
+
+      // Let registration + all retries complete
+      // attempt 1 + delay 2000ms + attempt 2 + delay 4000ms + attempt 3
+      await jest.advanceTimersByTimeAsync(100)
+      await jest.advanceTimersByTimeAsync(2000)
+      await jest.advanceTimersByTimeAsync(100)
+      await jest.advanceTimersByTimeAsync(4000)
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(mockedSyncProjectConfig).toHaveBeenCalledTimes(3)
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Initial config sync attempt 1 failed'))
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Initial config sync attempt 2 failed'))
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Initial config sync failed after all retries'))
+
+      agent.stop()
+    })
+
     it('should not schedule config sync when configHash is same in heartbeat', async () => {
       // First sync returns a config with hash
       mockedSyncProjectConfig.mockResolvedValueOnce({
@@ -745,7 +802,8 @@ describe('ProjectAgent', () => {
       const agent = new ProjectAgent(project, 'agent-1', options)
       agent.start()
 
-      await jest.advanceTimersByTimeAsync(100)
+      // Allow registration, config sync, and subscription setup to complete
+      await jest.advanceTimersByTimeAsync(500)
 
       const onMessage = mockSubscriber.subscribe.mock.calls[0][1] as (notification: Record<string, unknown>) => void
       onMessage({ id: '1', table: '', pk: '', sk: '', tenantCode: '', action: 'config-update', content: { configHash: 'pending-hash' } })

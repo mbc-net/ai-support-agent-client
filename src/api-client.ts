@@ -9,6 +9,7 @@ import type {
   AwsCredentials,
   ChatChunk,
   CommandResult,
+  DbCredentials,
   HeartbeatResponse,
   PendingCommand,
   ProjectConfigResponse,
@@ -177,6 +178,17 @@ export class ApiClient {
       const { data } = await this.client.get<AwsCredentials>(
         API_ENDPOINTS.AWS_CREDENTIALS,
         { params: { awsAccountId } },
+      )
+      return data
+    })
+  }
+
+  async getDbCredentials(name: string): Promise<DbCredentials> {
+    logger.debug(`Fetching DB credentials for: ${name}`)
+    return this.retry.withRetry(async () => {
+      const { data } = await this.client.get<DbCredentials>(
+        API_ENDPOINTS.DB_CREDENTIALS,
+        { params: { name } },
       )
       return data
     })

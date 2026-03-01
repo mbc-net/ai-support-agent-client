@@ -427,6 +427,104 @@ describe('api-chat-executor', () => {
     })
   })
 
+  it('should include history messages in API call', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const payloadWithHistory: ChatPayload = {
+      message: 'Follow up question',
+      history: [
+        { role: 'user', content: 'First question' },
+        { role: 'assistant', content: 'First answer' },
+      ],
+    }
+
+    const resultPromise = executeApiChatCommand(
+      payloadWithHistory, 'cmd-history', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    stream.emit('data', Buffer.from('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"response"}}\n\n'))
+    stream.emit('end')
+
+    const result = await resultPromise
+    expect(result.success).toBe(true)
+
+    // Verify messages array includes history
+    expect(mockedAxiosPost).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        messages: [
+          { role: 'user', content: 'First question' },
+          { role: 'assistant', content: 'First answer' },
+          { role: 'user', content: 'Follow up question' },
+        ],
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('should map non-assistant roles to user in history', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const payloadWithHistory: ChatPayload = {
+      message: 'Current',
+      history: [
+        { role: 'system', content: 'System message' },
+        { role: 'assistant', content: 'Assistant reply' },
+      ],
+    }
+
+    const resultPromise = executeApiChatCommand(
+      payloadWithHistory, 'cmd-history-roles', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    stream.emit('end')
+
+    await resultPromise
+
+    expect(mockedAxiosPost).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        messages: [
+          { role: 'user', content: 'System message' },
+          { role: 'assistant', content: 'Assistant reply' },
+          { role: 'user', content: 'Current' },
+        ],
+      }),
+      expect.any(Object),
+    )
+  })
+
+  it('should handle empty history array', async () => {
+    const stream = new EventEmitter()
+    mockedAxiosPost.mockResolvedValue({ data: stream } as any)
+
+    const payloadWithHistory: ChatPayload = {
+      message: 'No history',
+      history: [],
+    }
+
+    const resultPromise = executeApiChatCommand(
+      payloadWithHistory, 'cmd-empty-history', mockClient, baseConfig, 'agent-1',
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    stream.emit('end')
+
+    await resultPromise
+
+    expect(mockedAxiosPost).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        messages: [{ role: 'user', content: 'No history' }],
+      }),
+      expect.any(Object),
+    )
+  })
+
   it('should handle incomplete SSE lines across chunks', async () => {
     const stream = new EventEmitter()
     mockedAxiosPost.mockResolvedValue({ data: stream } as any)
