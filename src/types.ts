@@ -1,3 +1,8 @@
+export interface HistoryMessage {
+  role: string
+  content: string
+}
+
 export type ReleaseChannel = 'latest' | 'beta' | 'alpha'
 
 export interface VersionInfo {
@@ -212,6 +217,14 @@ export interface ProjectConfigResponse {
       defaultProfile?: string
     }
   }
+  databases?: Array<{
+    name: string
+    host: string
+    port: number
+    database: string
+    engine: string
+    writePermissions?: { insert: boolean; update: boolean; delete: boolean }
+  }>
   documentation?: {
     sources: Array<{
       type: 'url' | 's3'
@@ -220,6 +233,17 @@ export interface ProjectConfigResponse {
       prefix?: string
     }>
   }
+}
+
+export interface DbCredentials {
+  name: string
+  engine: string
+  host: string
+  port: number
+  database: string
+  user: string
+  password: string
+  writePermissions?: { insert: boolean; update: boolean; delete: boolean }
 }
 
 export interface CachedProjectConfig {

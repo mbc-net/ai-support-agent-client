@@ -13,10 +13,10 @@ import {
   LOG_MESSAGE_LIMIT,
 } from '../constants'
 import { logger } from '../logger'
-import type { AgentServerConfig, ChatChunkType, ChatPayload, CommandResult } from '../types'
+import type { AgentServerConfig, ChatChunkType, ChatPayload, CommandResult, HistoryMessage } from '../types'
 import { getErrorMessage, parseString, truncateString } from '../utils'
 
-import { createChunkSender } from './shared-chat-utils'
+import { createChunkSender, parseHistory } from './shared-chat-utils'
 
 /** Anthropic API のトークン使用量 */
 interface ApiUsage {
@@ -69,6 +69,8 @@ export async function executeApiChatCommand(
     const maxTokens = config?.claudeCodeConfig?.maxTokens ?? DEFAULT_MAX_TOKENS
     const systemPrompt = config?.claudeCodeConfig?.systemPrompt
 
+    const historyMessages = parseHistory(payload.history)
+
     const result = await callAnthropicApi(
       apiKey,
       message,
@@ -76,6 +78,7 @@ export async function executeApiChatCommand(
       maxTokens,
       systemPrompt,
       sendChunk,
+      historyMessages,
     )
 
     logger.info(
@@ -111,12 +114,20 @@ async function callAnthropicApi(
   maxTokens: number,
   systemPrompt: string | undefined,
   sendChunk: (type: ChatChunkType, content: string) => Promise<void>,
+  history?: HistoryMessage[],
 ): Promise<ApiChatResult> {
+  const messages = [
+    ...(history ?? []).map((msg) => ({
+      role: msg.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+      content: msg.content,
+    })),
+    { role: 'user' as const, content: message },
+  ]
   const body: Record<string, unknown> = {
     model,
     max_tokens: maxTokens,
     stream: true,
-    messages: [{ role: 'user', content: message }],
+    messages,
   }
   if (systemPrompt) {
     body.system = systemPrompt

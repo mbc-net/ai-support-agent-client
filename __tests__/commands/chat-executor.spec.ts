@@ -816,6 +816,117 @@ describe('chat-executor', () => {
     })
   })
 
+  describe('conversation history', () => {
+    function createMockProcess() {
+      const handlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+      const stdoutHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+      const stderrHandlers: Record<string, ((...args: unknown[]) => void)[]> = {}
+
+      return {
+        pid: 12345,
+        killed: false,
+        kill: jest.fn(),
+        stdout: {
+          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+            stdoutHandlers[event] = stdoutHandlers[event] || []
+            stdoutHandlers[event].push(cb)
+          }),
+        },
+        stderr: {
+          on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+            stderrHandlers[event] = stderrHandlers[event] || []
+            stderrHandlers[event].push(cb)
+          }),
+        },
+        on: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+          handlers[event] = handlers[event] || []
+          handlers[event].push(cb)
+        }),
+        emit(event: string, ...args: unknown[]) {
+          for (const cb of handlers[event] || []) cb(...args)
+        },
+        emitStdout(event: string, ...args: unknown[]) {
+          for (const cb of stdoutHandlers[event] || []) cb(...args)
+        },
+      }
+    }
+
+    it('should include conversation history in message for claude_code mode', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const payload: ChatPayload = {
+        message: 'Follow up',
+        history: [
+          { role: 'user', content: 'First question' },
+          { role: 'assistant', content: 'First answer' },
+        ],
+      }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-history', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      const result = await resultPromise
+      expect(result.success).toBe(true)
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      const messageArg = args[args.length - 1]
+      expect(messageArg).toContain('<conversation_history>')
+      expect(messageArg).toContain('[user]: First question')
+      expect(messageArg).toContain('[assistant]: First answer')
+      expect(messageArg).toContain('Follow up')
+    })
+
+    it('should pass original message without history when history is empty', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const payload: ChatPayload = {
+        message: 'No history here',
+        history: [],
+      }
+
+      const resultPromise = executeChatCommand(payload, 'cmd-no-history', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      const messageArg = args[args.length - 1]
+      expect(messageArg).toBe('No history here')
+      expect(messageArg).not.toContain('<conversation_history>')
+    })
+
+    it('should pass original message when history is not provided', async () => {
+      const { spawn } = require('child_process')
+      const mockProcess = createMockProcess()
+      spawn.mockReturnValue(mockProcess)
+
+      const resultPromise = executeChatCommand(basePayload, 'cmd-no-history-field', mockClient, undefined, 'claude_code', 'agent-1')
+
+      await new Promise((r) => setTimeout(r, 10))
+      mockProcess.emitStdout('data', Buffer.from('response'))
+      mockProcess.emit('close', 0)
+
+      await resultPromise
+
+      const spawnCall = spawn.mock.calls[spawn.mock.calls.length - 1]
+      const args = spawnCall[1] as string[]
+      const messageArg = args[args.length - 1]
+      expect(messageArg).toBe('Hello, world!')
+    })
+  })
+
   describe('project directory auto-add dirs', () => {
     function createMockProcess() {
       const handlers: Record<string, ((...args: unknown[]) => void)[]> = {}

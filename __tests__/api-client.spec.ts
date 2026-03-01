@@ -252,6 +252,31 @@ describe('ApiClient', () => {
     })
   })
 
+  describe('getDbCredentials', () => {
+    it('should fetch DB credentials', async () => {
+      mockInstance.get.mockResolvedValue({
+        data: {
+          name: 'MAIN',
+          engine: 'mysql',
+          host: 'db.local',
+          port: 3306,
+          database: 'testdb',
+          user: 'admin',
+          password: 'secret',
+        },
+      })
+
+      const result = await client.getDbCredentials('MAIN')
+      expect(result.name).toBe('MAIN')
+      expect(result.engine).toBe('mysql')
+      expect(result.password).toBe('secret')
+      expect(mockInstance.get).toHaveBeenCalledWith(
+        '/api/agent/db-credentials',
+        { params: { name: 'MAIN' } },
+      )
+    })
+  })
+
   describe('submitResult', () => {
     it('should submit command result', async () => {
       mockInstance.post.mockResolvedValue({ data: { success: true } })

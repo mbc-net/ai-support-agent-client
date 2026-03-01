@@ -1,5 +1,5 @@
 import type { ApiClient } from '../../src/api-client'
-import { createChunkSender } from '../../src/commands/shared-chat-utils'
+import { createChunkSender, formatHistoryForClaudeCode, parseHistory } from '../../src/commands/shared-chat-utils'
 
 jest.mock('../../src/logger')
 
@@ -97,6 +97,78 @@ describe('shared-chat-utils', () => {
       const debugCall = (logger.debug as jest.Mock).mock.calls[0][0] as string
       expect(debugCall).toContain('...')
       expect(debugCall).not.toContain('x'.repeat(200))
+    })
+  })
+
+  describe('parseHistory', () => {
+    it('should return empty array for non-array input', () => {
+      expect(parseHistory(undefined)).toEqual([])
+      expect(parseHistory(null)).toEqual([])
+      expect(parseHistory('string')).toEqual([])
+      expect(parseHistory(42)).toEqual([])
+      expect(parseHistory({})).toEqual([])
+    })
+
+    it('should return empty array for empty array', () => {
+      expect(parseHistory([])).toEqual([])
+    })
+
+    it('should parse valid history messages', () => {
+      const input = [
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Hi there' },
+      ]
+      expect(parseHistory(input)).toEqual([
+        { role: 'user', content: 'Hello' },
+        { role: 'assistant', content: 'Hi there' },
+      ])
+    })
+
+    it('should filter out invalid items', () => {
+      const input = [
+        { role: 'user', content: 'valid' },
+        { role: 123, content: 'invalid role' },
+        { role: 'user', content: 456 },
+        null,
+        'string',
+        { role: 'assistant' }, // missing content
+        { content: 'missing role' }, // missing role
+        { role: 'user', content: 'also valid' },
+      ]
+      expect(parseHistory(input)).toEqual([
+        { role: 'user', content: 'valid' },
+        { role: 'user', content: 'also valid' },
+      ])
+    })
+  })
+
+  describe('formatHistoryForClaudeCode', () => {
+    it('should return currentMessage when history is empty', () => {
+      expect(formatHistoryForClaudeCode([], 'Hello')).toBe('Hello')
+    })
+
+    it('should format history with current message', () => {
+      const history = [
+        { role: 'user', content: 'First question' },
+        { role: 'assistant', content: 'First answer' },
+      ]
+      const result = formatHistoryForClaudeCode(history, 'Follow up question')
+      expect(result).toBe(
+        '<conversation_history>\n' +
+        '[user]: First question\n\n' +
+        '[assistant]: First answer\n' +
+        '</conversation_history>\n\n' +
+        'Follow up question',
+      )
+    })
+
+    it('should handle single history message', () => {
+      const history = [{ role: 'user', content: 'Previous' }]
+      const result = formatHistoryForClaudeCode(history, 'Current')
+      expect(result).toContain('<conversation_history>')
+      expect(result).toContain('[user]: Previous')
+      expect(result).toContain('</conversation_history>')
+      expect(result).toContain('Current')
     })
   })
 })
