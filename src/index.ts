@@ -119,6 +119,14 @@ program
     logger.success(t('config.languageSet', { lang }))
   })
 
+program
+  .command('docker-login')
+  .description(t('cmd.dockerLogin'))
+  .action(async () => {
+    const { dockerLogin } = await import('./docker/docker-runner')
+    dockerLogin()
+  })
+
 registerStatusCommand(program)
 registerSetProjectDirCommand(program)
 
