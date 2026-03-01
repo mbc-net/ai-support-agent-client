@@ -890,5 +890,12 @@ describe('ProjectAgent', () => {
       const agent = new ProjectAgent(project, 'agent-1', options, undefined, undefined, '~/projects/{projectCode}')
       expect(agent).toBeDefined()
     })
+
+    it('should always initialize project directory even without explicit config', () => {
+      const { initProjectDir } = require('../src/project-dir')
+      const agent = new ProjectAgent(project, 'agent-1', options)
+      expect(agent).toBeDefined()
+      expect(initProjectDir).toHaveBeenCalledWith(project, undefined)
+    })
   })
 })
