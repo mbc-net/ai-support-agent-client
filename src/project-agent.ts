@@ -48,10 +48,8 @@ export class ProjectAgent {
     this.prefix = `[${project.projectCode}]`
     this.tenantCode = tenantCode ?? project.projectCode
     this.localAgentChatMode = localAgentChatMode
-    // Resolve project directory if configured
-    if (project.projectDir || defaultProjectDir) {
-      this.projectDir = initProjectDir(project, defaultProjectDir)
-    }
+    // Always resolve project directory (uses default template if neither is set)
+    this.projectDir = initProjectDir(project, defaultProjectDir)
   }
 
   start(): void {
