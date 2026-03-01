@@ -173,37 +173,23 @@ export function dockerLogin(): void {
     fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
   }
 
-  const dockerArgs = [
-    'run', '--rm', '-it',
-    '-v', `${claudeDir}:${claudeDir}:rw`,
-    ...(fs.existsSync(claudeJson) ? ['-v', `${claudeJson}:${claudeJson}:rw`] : []),
-    '-e', `HOME=${home}`,
-    '--entrypoint', 'claude',
+  const parts = [
+    'docker run --rm -it',
+    `-v ${claudeDir}:${claudeDir}:rw`,
+    ...(fs.existsSync(claudeJson) ? [`-v ${claudeJson}:${claudeJson}:rw`] : []),
+    `-e HOME=${home}`,
+    '--entrypoint claude',
     `${IMAGE_NAME}:${version}`,
-    'auth', 'login',
+    'auth login',
   ]
 
-  const child = spawn('docker', dockerArgs, {
-    stdio: 'inherit',
-  })
+  const command = parts.join(' \\\n  ')
 
-  const forwardSignal = (signal: NodeJS.Signals): void => {
-    child.kill(signal)
-  }
-  process.on('SIGINT', () => forwardSignal('SIGINT'))
-  process.on('SIGTERM', () => forwardSignal('SIGTERM'))
-
-  child.on('error', (err) => {
-    logger.error(t('docker.runFailed', { message: err.message }))
-    process.exit(1)
-  })
-
-  child.on('close', (code) => {
-    if (code === 0) {
-      logger.success(t('docker.loginComplete'))
-    }
-    process.exit(code ?? 0)
-  })
+  logger.info(t('docker.loginInstruction'))
+  console.log('')
+  console.log(command)
+  console.log('')
+  logger.info(t('docker.loginHint'))
 }
 
 export function runInDocker(opts: DockerRunOptions): void {

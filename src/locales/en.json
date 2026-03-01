@@ -114,5 +114,6 @@
   "docker.imageFound": "Using existing Docker image ({{version}})",
   "docker.starting": "Starting Docker container...",
   "docker.runFailed": "Failed to run Docker container: {{message}}",
-  "docker.loginComplete": "Claude Code login complete"
+  "docker.loginInstruction": "Run the following command directly in your terminal:",
+  "docker.loginHint": "After logging in via browser, paste the auth code into the terminal and press Enter."
 }

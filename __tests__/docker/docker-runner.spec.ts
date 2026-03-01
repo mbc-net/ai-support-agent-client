@@ -336,6 +336,16 @@ describe('docker-runner', () => {
   })
 
   describe('dockerLogin', () => {
+    let consoleSpy: jest.SpyInstance
+
+    beforeEach(() => {
+      consoleSpy = jest.spyOn(console, 'log').mockImplementation()
+    })
+
+    afterEach(() => {
+      consoleSpy.mockRestore()
+    })
+
     it('should exit with error when Docker is not available', () => {
       mockExecSync.mockImplementation(() => { throw new Error('not found') })
 
@@ -345,35 +355,22 @@ describe('docker-runner', () => {
       expect(mockExit).toHaveBeenCalledWith(1)
     })
 
-    it('should spawn docker run with claude auth login entrypoint', () => {
+    it('should print docker run command with claude auth login', () => {
       mockExecSync.mockReturnValue(Buffer.from(''))
       mockExistsSync.mockReturnValue(true)
 
-      const fakeChild = Object.assign(new EventEmitter(), {
-        kill: jest.fn(),
-      })
-      mockSpawn.mockReturnValue(fakeChild as never)
-
       dockerLogin()
 
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'docker',
-        expect.arrayContaining(['run', '--rm', '-it', '--entrypoint', 'claude']),
-        { stdio: 'inherit' },
-      )
-      const spawnArgs = mockSpawn.mock.calls[0][1] as string[]
-      expect(spawnArgs).toContain('auth')
-      expect(spawnArgs).toContain('login')
+      const output = consoleSpy.mock.calls.map(c => c[0]).join('\n')
+      expect(output).toContain('docker run --rm -it')
+      expect(output).toContain('--entrypoint claude')
+      expect(output).toContain('auth login')
+      expect(output).toContain('.claude')
     })
 
     it('should create ~/.claude directory if it does not exist', () => {
       mockExecSync.mockReturnValue(Buffer.from(''))
       mockExistsSync.mockReturnValue(false)
-
-      const fakeChild = Object.assign(new EventEmitter(), {
-        kill: jest.fn(),
-      })
-      mockSpawn.mockReturnValue(fakeChild as never)
 
       dockerLogin()
 
@@ -383,74 +380,38 @@ describe('docker-runner', () => {
       )
     })
 
-    it('should log success on exit code 0', () => {
+    it('should include .claude.json mount when file exists', () => {
       mockExecSync.mockReturnValue(Buffer.from(''))
       mockExistsSync.mockReturnValue(true)
 
-      const fakeChild = Object.assign(new EventEmitter(), {
-        kill: jest.fn(),
-      })
-      mockSpawn.mockReturnValue(fakeChild as never)
-
       dockerLogin()
 
-      fakeChild.emit('close', 0)
-      expect(logger.success).toHaveBeenCalledWith(expect.stringContaining('docker.loginComplete'))
-      expect(mockExit).toHaveBeenCalledWith(0)
+      const output = consoleSpy.mock.calls.map(c => c[0]).join('\n')
+      expect(output).toContain('.claude.json')
     })
 
-    it('should not log success on non-zero exit code', () => {
+    it('should omit .claude.json mount when file does not exist', () => {
       mockExecSync.mockReturnValue(Buffer.from(''))
-      mockExistsSync.mockReturnValue(true)
-
-      const fakeChild = Object.assign(new EventEmitter(), {
-        kill: jest.fn(),
+      // First call: claudeDir exists, second call: claudeJson does not exist
+      mockExistsSync.mockImplementation((p: unknown) => {
+        return !String(p).endsWith('.claude.json')
       })
-      mockSpawn.mockReturnValue(fakeChild as never)
 
       dockerLogin()
 
-      fakeChild.emit('close', 1)
-      expect(logger.success).not.toHaveBeenCalled()
-      expect(mockExit).toHaveBeenCalledWith(1)
+      const output = consoleSpy.mock.calls.map(c => c[0]).join('\n')
+      expect(output).toContain('.claude:')
+      expect(output).not.toContain('.claude.json')
     })
 
-    it('should handle spawn error', () => {
+    it('should show instruction and hint messages', () => {
       mockExecSync.mockReturnValue(Buffer.from(''))
       mockExistsSync.mockReturnValue(true)
 
-      const fakeChild = Object.assign(new EventEmitter(), {
-        kill: jest.fn(),
-      })
-      mockSpawn.mockReturnValue(fakeChild as never)
-
       dockerLogin()
 
-      fakeChild.emit('error', new Error('spawn failed'))
-      expect(logger.error).toHaveBeenCalled()
-      expect(mockExit).toHaveBeenCalledWith(1)
-    })
-
-    it('should forward SIGINT to child process', () => {
-      mockExecSync.mockReturnValue(Buffer.from(''))
-      mockExistsSync.mockReturnValue(true)
-
-      const fakeChild = Object.assign(new EventEmitter(), {
-        kill: jest.fn(),
-      })
-      mockSpawn.mockReturnValue(fakeChild as never)
-
-      const processOnSpy = jest.spyOn(process, 'on')
-
-      dockerLogin()
-
-      const sigintCall = processOnSpy.mock.calls.find(call => call[0] === 'SIGINT')
-      expect(sigintCall).toBeDefined()
-      const handler = sigintCall![1] as () => void
-      handler()
-      expect(fakeChild.kill).toHaveBeenCalledWith('SIGINT')
-
-      processOnSpy.mockRestore()
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('docker.loginInstruction'))
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('docker.loginHint'))
     })
   })
 
