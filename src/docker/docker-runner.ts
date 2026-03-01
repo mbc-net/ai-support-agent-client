@@ -145,6 +145,53 @@ export function buildContainerArgs(opts: DockerRunOptions): string[] {
   return args
 }
 
+export function ensureImage(): string {
+  const version = AGENT_VERSION
+  if (!imageExists(version)) {
+    buildImage(version)
+  } else {
+    logger.info(t('docker.imageFound', { version }))
+  }
+  return version
+}
+
+export function dockerLogin(): void {
+  if (!checkDockerAvailable()) {
+    logger.error(t('docker.notAvailable'))
+    process.exit(1)
+    return
+  }
+
+  const version = ensureImage()
+
+  const home = os.homedir()
+  const claudeDir = path.join(home, '.claude')
+  const claudeJson = path.join(home, '.claude.json')
+
+  // Ensure ~/.claude/ directory exists for credential storage
+  if (!fs.existsSync(claudeDir)) {
+    fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
+  }
+
+  const parts = [
+    'docker run --rm -it',
+    `-v ${claudeDir}:${claudeDir}:rw`,
+    ...(fs.existsSync(claudeJson) ? [`-v ${claudeJson}:${claudeJson}:rw`] : []),
+    `-e HOME=${home}`,
+    '--entrypoint claude',
+    `${IMAGE_NAME}:${version}`,
+    'auth login',
+  ]
+
+  const command = parts.join(' \\\n  ')
+
+  logger.info(t('docker.loginInstruction'))
+  console.log('')
+  console.log(command)
+  console.log('')
+  logger.info(t('docker.loginHint'))
+}
+
 export function runInDocker(opts: DockerRunOptions): void {
   if (!checkDockerAvailable()) {
     logger.error(t('docker.notAvailable'))
@@ -152,12 +199,7 @@ export function runInDocker(opts: DockerRunOptions): void {
     return
   }
 
-  const version = AGENT_VERSION
-  if (!imageExists(version)) {
-    buildImage(version)
-  } else {
-    logger.info(t('docker.imageFound', { version }))
-  }
+  const version = ensureImage()
 
   logger.info(t('docker.starting'))
 
