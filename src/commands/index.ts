@@ -18,6 +18,7 @@ export interface ExecuteCommandOptions {
   agentId?: string
   projectDir?: string
   projectConfig?: ProjectConfigResponse
+  mcpConfigPath?: string
   onSetup?: () => Promise<void>
   onConfigSync?: () => Promise<void>
 }
@@ -79,7 +80,7 @@ export async function executeCommand(
         if (!opts?.commandId || !opts?.client) {
           return { success: false, error: ERR_CHAT_REQUIRES_CLIENT }
         }
-        return await executeChatCommand(p, opts.commandId, opts.client, opts.serverConfig, opts.activeChatMode, opts.agentId, opts.projectDir, opts.projectConfig)
+        return await executeChatCommand(p, opts.commandId, opts.client, opts.serverConfig, opts.activeChatMode, opts.agentId, opts.projectDir, opts.projectConfig, opts.mcpConfigPath)
       case 'setup':
         if (!opts?.onSetup) {
           return { success: false, error: ERR_SETUP_REQUIRES_CALLBACK }

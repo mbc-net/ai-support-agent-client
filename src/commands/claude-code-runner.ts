@@ -33,6 +33,7 @@ export function buildClaudeArgs(
     allowedTools?: string[]
     addDirs?: string[]
     locale?: string
+    mcpConfigPath?: string
   },
 ): string[] {
   const args = ['-p']
@@ -46,6 +47,9 @@ export function buildClaudeArgs(
       const resolved = dir.replace(/^~/, os.homedir())
       args.push('--add-dir', resolved)
     }
+  }
+  if (options?.mcpConfigPath) {
+    args.push('--mcp-config', options.mcpConfigPath)
   }
   if (options?.locale) {
     const langPrompt = options.locale === 'ja'
@@ -67,6 +71,7 @@ export async function runClaudeCode(
   addDirs?: string[],
   locale?: string,
   awsEnv?: Record<string, string>,
+  mcpConfigPath?: string,
 ): Promise<ClaudeCodeResult> {
   return new Promise<ClaudeCodeResult>((resolve, reject) => {
     const startTime = Date.now()
@@ -75,7 +80,7 @@ export async function runClaudeCode(
     // CLAUDECODE および CLAUDE_CODE_* 環境変数を除外
     const cleanEnv = buildCleanEnv()
     const env = awsEnv ? { ...cleanEnv, ...awsEnv } : cleanEnv
-    const args = buildClaudeArgs(message, { allowedTools, addDirs, locale })
+    const args = buildClaudeArgs(message, { allowedTools, addDirs, locale, mcpConfigPath })
 
     const child = spawn('claude', args, {
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -7,7 +7,7 @@ import { getErrorMessage, parseString, truncateString } from '../utils'
 
 import { executeApiChatCommand } from './api-chat-executor'
 import { runClaudeCode } from './claude-code-runner'
-import { createChunkSender } from './shared-chat-utils'
+import { createChunkSender, formatHistoryForClaudeCode, parseHistory } from './shared-chat-utils'
 
 // Re-export for backward compatibility with existing consumers
 export { buildClaudeArgs, buildCleanEnv } from './claude-code-runner'
@@ -28,6 +28,7 @@ export async function executeChatCommand(
   agentId?: string,
   projectDir?: string,
   projectConfig?: ProjectConfigResponse,
+  mcpConfigPath?: string,
 ): Promise<CommandResult> {
   if (!agentId) {
     return { success: false, error: ERR_AGENT_ID_REQUIRED }
@@ -40,7 +41,7 @@ export async function executeChatCommand(
       return executeApiChatCommand(payload, commandId, client, serverConfig, agentId)
     case 'claude_code':
     default:
-      return executeClaudeCodeChat(payload, commandId, client, agentId, serverConfig, projectDir, projectConfig)
+      return executeClaudeCodeChat(payload, commandId, client, agentId, serverConfig, projectDir, projectConfig, mcpConfigPath)
   }
 }
 
@@ -57,6 +58,7 @@ async function executeClaudeCodeChat(
   serverConfig?: AgentServerConfig,
   projectDir?: string,
   projectConfig?: ProjectConfigResponse,
+  mcpConfigPath?: string,
 ): Promise<CommandResult> {
   const message = parseString(payload.message)
   if (!message) {
@@ -102,9 +104,13 @@ async function executeClaudeCodeChat(
       }
     }
 
-    logger.debug(`[chat] Spawning claude CLI for command [${commandId}]${allowedTools?.length ? ` with allowedTools: ${allowedTools.join(', ')}` : ' (no allowedTools)'}${addDirs?.length ? ` with addDirs: ${addDirs.join(', ')}` : ''}${locale ? ` locale=${locale}` : ''}${awsEnv ? ' with AWS credentials' : ''}`)
+    // 会話履歴をメッセージに埋め込む（Claude Code CLI用）
+    const history = parseHistory(payload.history)
+    const messageWithHistory = formatHistoryForClaudeCode(history, message)
+
+    logger.debug(`[chat] Spawning claude CLI for command [${commandId}]${allowedTools?.length ? ` with allowedTools: ${allowedTools.join(', ')}` : ' (no allowedTools)'}${addDirs?.length ? ` with addDirs: ${addDirs.join(', ')}` : ''}${locale ? ` locale=${locale}` : ''}${awsEnv ? ' with AWS credentials' : ''}${mcpConfigPath ? ' with MCP config' : ''}${history.length > 0 ? ` with ${history.length} history messages` : ''}`)
     logger.debug(`[chat] serverConfig.claudeCodeConfig: ${JSON.stringify(serverConfig?.claudeCodeConfig ?? null)}`)
-    const result = await runClaudeCode(message, sendChunk, allowedTools, addDirs, locale, awsEnv)
+    const result = await runClaudeCode(messageWithHistory, sendChunk, allowedTools, addDirs, locale, awsEnv, mcpConfigPath)
     logger.info(`[chat] Chat command completed [${commandId}]: output=${result.text.length} chars, ${getChunkIndex()} chunks sent, duration=${result.metadata.durationMs}ms`)
     // 完了チャンクを送信（metadata を含める）
     const doneContent = JSON.stringify({

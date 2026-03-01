@@ -1,13 +1,16 @@
 import * as os from 'os'
 
+import { join } from 'path'
+
 import { ApiClient } from './api-client'
 import { AppSyncSubscriber, type AppSyncNotification } from './appsync-subscriber'
 import { detectAvailableChatModes, resolveActiveChatMode } from './chat-mode-detector'
 import { executeCommand } from './commands'
-import { CONFIG_SYNC_DEBOUNCE_MS, LOG_PAYLOAD_LIMIT, LOG_RESULT_LIMIT } from './constants'
+import { CONFIG_SYNC_DEBOUNCE_MS, INITIAL_CONFIG_SYNC_MAX_RETRIES, INITIAL_CONFIG_SYNC_RETRY_DELAY_MS, LOG_PAYLOAD_LIMIT, LOG_RESULT_LIMIT } from './constants'
 import { t } from './i18n'
 import { logger } from './logger'
 import { writeAwsConfig } from './aws-profile'
+import { writeMcpConfig } from './mcp/config-writer'
 import { syncProjectConfig } from './project-config-sync'
 import { initProjectDir } from './project-dir'
 import { getSystemInfo, getLocalIpAddress } from './system-info'
@@ -35,6 +38,10 @@ export class ProjectAgent {
   private currentConfigHash: string | undefined = undefined
   private configSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null
   private projectConfig: ProjectConfigResponse | undefined = undefined
+  private mcpConfigPath: string | undefined = undefined
+  private readonly apiUrl: string
+  private readonly token: string
+  private readonly projectCode: string
 
   constructor(
     project: ProjectRegistration,
@@ -48,6 +55,9 @@ export class ProjectAgent {
     this.prefix = `[${project.projectCode}]`
     this.tenantCode = tenantCode ?? project.projectCode
     this.localAgentChatMode = localAgentChatMode
+    this.apiUrl = project.apiUrl
+    this.token = project.token
+    this.projectCode = project.projectCode
     // Always resolve project directory (uses default template if neither is set)
     this.projectDir = initProjectDir(project, defaultProjectDir)
   }
@@ -91,8 +101,18 @@ export class ProjectAgent {
       return
     }
 
-    // Perform initial config sync
-    await this.performConfigSync()
+    // Perform initial config sync with retries
+    for (let attempt = 1; attempt <= INITIAL_CONFIG_SYNC_MAX_RETRIES; attempt++) {
+      await this.performConfigSync()
+      if (this.currentConfigHash) break
+      if (attempt < INITIAL_CONFIG_SYNC_MAX_RETRIES) {
+        logger.warn(`${this.prefix} Initial config sync attempt ${attempt} failed, retrying...`)
+        await new Promise(resolve => setTimeout(resolve, INITIAL_CONFIG_SYNC_RETRY_DELAY_MS * attempt))
+      }
+    }
+    if (!this.currentConfigHash) {
+      logger.warn(`${this.prefix} Initial config sync failed after all retries`)
+    }
 
     if (result.transportMode === 'realtime' && result.appsyncUrl && result.appsyncApiKey) {
       logger.info(`${this.prefix} Starting subscription mode (realtime)`)
@@ -289,6 +309,28 @@ export class ProjectAgent {
       }
     }
 
+    // Log database configuration
+    if (config.databases?.length) {
+      logger.info(`${this.prefix} Databases configured: ${config.databases.map(db => `${db.name}(${db.engine})`).join(', ')}`)
+    }
+
+    // Write MCP config file if project directory and databases are configured
+    if (this.projectDir && config.databases?.length) {
+      try {
+        const mcpServerPath = join(__dirname, 'mcp', 'server.js')
+        this.mcpConfigPath = writeMcpConfig(
+          this.projectDir,
+          this.apiUrl,
+          this.token,
+          this.projectCode,
+          mcpServerPath,
+        )
+        logger.info(`${this.prefix} MCP config written: ${this.mcpConfigPath}`)
+      } catch (error) {
+        logger.warn(`${this.prefix} Failed to write MCP config: ${getErrorMessage(error)}`)
+      }
+    }
+
     logger.info(`${this.prefix} Config applied (hash: ${config.configHash})`)
   }
 
@@ -304,6 +346,7 @@ export class ProjectAgent {
         agentId: this.agentId,
         projectDir: this.projectDir,
         projectConfig: this.projectConfig,
+        mcpConfigPath: this.mcpConfigPath,
         onSetup: () => this.performSetup(),
         onConfigSync: () => this.performConfigSync(),
       })

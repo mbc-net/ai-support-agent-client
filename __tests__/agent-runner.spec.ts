@@ -28,6 +28,16 @@ jest.mock('../src/appsync-subscriber', () => ({
 jest.mock('../src/project-dir', () => ({
   initProjectDir: jest.fn().mockReturnValue('/tmp/test-project'),
 }))
+jest.mock('../src/project-config-sync', () => ({
+  syncProjectConfig: jest.fn().mockResolvedValue({
+    configHash: 'default-hash',
+    project: { projectCode: 'test-proj', projectName: 'Test' },
+    agent: { agentEnabled: true, builtinAgentEnabled: true, builtinFallbackEnabled: true, externalAgentEnabled: true, allowedTools: [] },
+  }),
+}))
+jest.mock('../src/aws-profile', () => ({
+  writeAwsConfig: jest.fn(),
+}))
 jest.mock('os', () => {
   const actual = jest.requireActual<typeof os>('os')
   return {
