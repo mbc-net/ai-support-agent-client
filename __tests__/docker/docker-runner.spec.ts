@@ -7,6 +7,7 @@ jest.mock('child_process', () => ({
 
 jest.mock('fs', () => ({
   existsSync: jest.fn(),
+  mkdirSync: jest.fn(),
 }))
 
 jest.mock('../../src/docker/dockerfile-path', () => ({
@@ -45,7 +46,7 @@ jest.mock('../../src/logger', () => ({
 
 import { execSync, spawn } from 'child_process'
 import * as os from 'os'
-import { existsSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { getConfigDir, loadConfig } from '../../src/config-manager'
 import { logger } from '../../src/logger'
 import {
@@ -55,6 +56,8 @@ import {
   buildVolumeMounts,
   buildEnvArgs,
   buildContainerArgs,
+  ensureImage,
+  dockerLogin,
   runInDocker,
 } from '../../src/docker/docker-runner'
 
@@ -63,6 +66,7 @@ const mockSpawn = spawn as jest.MockedFunction<typeof spawn>
 const mockGetConfigDir = getConfigDir as jest.MockedFunction<typeof getConfigDir>
 const mockLoadConfig = loadConfig as jest.MockedFunction<typeof loadConfig>
 const mockExistsSync = existsSync as jest.MockedFunction<typeof existsSync>
+const mockMkdirSync = mkdirSync as jest.MockedFunction<typeof mkdirSync>
 
 describe('docker-runner', () => {
   const originalEnv = process.env
@@ -299,6 +303,154 @@ describe('docker-runner', () => {
     it('should not include --no-auto-update when autoUpdate is undefined', () => {
       const args = buildContainerArgs({})
       expect(args).not.toContain('--no-auto-update')
+    })
+  })
+
+  describe('ensureImage', () => {
+    it('should build image when it does not exist', () => {
+      mockExecSync.mockImplementation((cmd: unknown) => {
+        const cmdStr = String(cmd)
+        if (cmdStr.startsWith('docker image inspect')) throw new Error('No such image')
+        return Buffer.from('')
+      })
+
+      ensureImage()
+
+      const buildCall = mockExecSync.mock.calls.find(
+        call => String(call[0]).startsWith('docker build'),
+      )
+      expect(buildCall).toBeDefined()
+    })
+
+    it('should skip build when image exists', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+
+      ensureImage()
+
+      const buildCall = mockExecSync.mock.calls.find(
+        call => String(call[0]).startsWith('docker build'),
+      )
+      expect(buildCall).toBeUndefined()
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('docker.imageFound'))
+    })
+  })
+
+  describe('dockerLogin', () => {
+    it('should exit with error when Docker is not available', () => {
+      mockExecSync.mockImplementation(() => { throw new Error('not found') })
+
+      dockerLogin()
+
+      expect(logger.error).toHaveBeenCalled()
+      expect(mockExit).toHaveBeenCalledWith(1)
+    })
+
+    it('should spawn docker run with claude auth login entrypoint', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+      mockExistsSync.mockReturnValue(true)
+
+      const fakeChild = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+      })
+      mockSpawn.mockReturnValue(fakeChild as never)
+
+      dockerLogin()
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining(['run', '--rm', '-it', '--entrypoint', 'claude']),
+        { stdio: 'inherit' },
+      )
+      const spawnArgs = mockSpawn.mock.calls[0][1] as string[]
+      expect(spawnArgs).toContain('auth')
+      expect(spawnArgs).toContain('login')
+    })
+
+    it('should create ~/.claude directory if it does not exist', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+      mockExistsSync.mockReturnValue(false)
+
+      const fakeChild = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+      })
+      mockSpawn.mockReturnValue(fakeChild as never)
+
+      dockerLogin()
+
+      expect(mockMkdirSync).toHaveBeenCalledWith(
+        expect.stringContaining('.claude'),
+        { recursive: true, mode: 0o700 },
+      )
+    })
+
+    it('should log success on exit code 0', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+      mockExistsSync.mockReturnValue(true)
+
+      const fakeChild = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+      })
+      mockSpawn.mockReturnValue(fakeChild as never)
+
+      dockerLogin()
+
+      fakeChild.emit('close', 0)
+      expect(logger.success).toHaveBeenCalledWith(expect.stringContaining('docker.loginComplete'))
+      expect(mockExit).toHaveBeenCalledWith(0)
+    })
+
+    it('should not log success on non-zero exit code', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+      mockExistsSync.mockReturnValue(true)
+
+      const fakeChild = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+      })
+      mockSpawn.mockReturnValue(fakeChild as never)
+
+      dockerLogin()
+
+      fakeChild.emit('close', 1)
+      expect(logger.success).not.toHaveBeenCalled()
+      expect(mockExit).toHaveBeenCalledWith(1)
+    })
+
+    it('should handle spawn error', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+      mockExistsSync.mockReturnValue(true)
+
+      const fakeChild = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+      })
+      mockSpawn.mockReturnValue(fakeChild as never)
+
+      dockerLogin()
+
+      fakeChild.emit('error', new Error('spawn failed'))
+      expect(logger.error).toHaveBeenCalled()
+      expect(mockExit).toHaveBeenCalledWith(1)
+    })
+
+    it('should forward SIGINT to child process', () => {
+      mockExecSync.mockReturnValue(Buffer.from(''))
+      mockExistsSync.mockReturnValue(true)
+
+      const fakeChild = Object.assign(new EventEmitter(), {
+        kill: jest.fn(),
+      })
+      mockSpawn.mockReturnValue(fakeChild as never)
+
+      const processOnSpy = jest.spyOn(process, 'on')
+
+      dockerLogin()
+
+      const sigintCall = processOnSpy.mock.calls.find(call => call[0] === 'SIGINT')
+      expect(sigintCall).toBeDefined()
+      const handler = sigintCall![1] as () => void
+      handler()
+      expect(fakeChild.kill).toHaveBeenCalledWith('SIGINT')
+
+      processOnSpy.mockRestore()
     })
   })
 

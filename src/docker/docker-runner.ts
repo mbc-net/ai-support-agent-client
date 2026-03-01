@@ -145,6 +145,67 @@ export function buildContainerArgs(opts: DockerRunOptions): string[] {
   return args
 }
 
+export function ensureImage(): string {
+  const version = AGENT_VERSION
+  if (!imageExists(version)) {
+    buildImage(version)
+  } else {
+    logger.info(t('docker.imageFound', { version }))
+  }
+  return version
+}
+
+export function dockerLogin(): void {
+  if (!checkDockerAvailable()) {
+    logger.error(t('docker.notAvailable'))
+    process.exit(1)
+    return
+  }
+
+  const version = ensureImage()
+
+  const home = os.homedir()
+  const claudeDir = path.join(home, '.claude')
+  const claudeJson = path.join(home, '.claude.json')
+
+  // Ensure ~/.claude/ directory exists for credential storage
+  if (!fs.existsSync(claudeDir)) {
+    fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 })
+  }
+
+  const dockerArgs = [
+    'run', '--rm', '-it',
+    '-v', `${claudeDir}:${claudeDir}:rw`,
+    ...(fs.existsSync(claudeJson) ? ['-v', `${claudeJson}:${claudeJson}:rw`] : []),
+    '-e', `HOME=${home}`,
+    '--entrypoint', 'claude',
+    `${IMAGE_NAME}:${version}`,
+    'auth', 'login',
+  ]
+
+  const child = spawn('docker', dockerArgs, {
+    stdio: 'inherit',
+  })
+
+  const forwardSignal = (signal: NodeJS.Signals): void => {
+    child.kill(signal)
+  }
+  process.on('SIGINT', () => forwardSignal('SIGINT'))
+  process.on('SIGTERM', () => forwardSignal('SIGTERM'))
+
+  child.on('error', (err) => {
+    logger.error(t('docker.runFailed', { message: err.message }))
+    process.exit(1)
+  })
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      logger.success(t('docker.loginComplete'))
+    }
+    process.exit(code ?? 0)
+  })
+}
+
 export function runInDocker(opts: DockerRunOptions): void {
   if (!checkDockerAvailable()) {
     logger.error(t('docker.notAvailable'))
@@ -152,12 +213,7 @@ export function runInDocker(opts: DockerRunOptions): void {
     return
   }
 
-  const version = AGENT_VERSION
-  if (!imageExists(version)) {
-    buildImage(version)
-  } else {
-    logger.info(t('docker.imageFound', { version }))
-  }
+  const version = ensureImage()
 
   logger.info(t('docker.starting'))
 
